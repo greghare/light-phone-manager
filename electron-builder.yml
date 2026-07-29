@@ -1,0 +1,60 @@
+appId: com.lightphonemanager.app
+productName: Light Phone Manager
+copyright: Copyright © Light Phone Manager
+
+# productName above is the display name (Start Menu, About dialogs, window
+# title). executableName/artifactName control the actual built filenames —
+# kept lowercase_with_underscores instead of following productName's
+# spaces/capitalization.
+executableName: light_phone_manager
+# productFilename resolves to the sanitized executableName above, not productName.
+artifactName: ${productFilename}-${version}-${arch}.${ext}
+
+# Source icon (1024x1024 transparent PNG, generated from Lightphone-3.svg —
+# see scripts/generate-icon.js). electron-builder auto-converts this into
+# .icns (mac) and .ico (win), and generates the full Linux icon set.
+icon: build/icon.png
+
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - src/**/*
+  - package.json
+
+extraResources:
+  - from: resources/README-platform-tools.txt
+    to: platform-tools/README.txt
+
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  extraResources:
+    - from: resources/platform-tools/win32
+      to: platform-tools
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.utilities
+  extraResources:
+    - from: resources/platform-tools/darwin
+      to: platform-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64, arm64]
+  category: Utility
+  extraResources:
+    - from: resources/platform-tools/linux
+      to: platform-tools

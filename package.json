@@ -1,0 +1,27 @@
+{
+  "name": "light-phone-manager",
+  "productName": "Light Phone Manager",
+  "version": "1.0.0",
+  "description": "Manage sideloaded tools on your Light Phone 3 — track GitHub repos, install and update APKs, all with adb bundled in.",
+  "main": "src/main/main.js",
+  "author": "Light Phone Manager",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "fetch-platform-tools": "node scripts/fetch-platform-tools.js",
+    "predist": "node scripts/fetch-platform-tools.js",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "app-info-parser": "^1.1.6"
+  },
+  "devDependencies": {
+    "electron": "^35.7.5",
+    "electron-builder": "^24.13.3",
+    "extract-zip": "^2.0.1"
+  }
+}

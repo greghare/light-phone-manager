@@ -1,0 +1,90 @@
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/inter-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/inter-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("fonts/inter-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/inter-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("fonts/inter-latin-800-normal.woff2") format("woff2");
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #000; }
+#app {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: #000;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+}
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-thumb { background: #fff; border-radius: 0; }
+::-webkit-scrollbar-track { background: transparent; }
+@keyframes lp-spin { to { transform: rotate(360deg); } }
+button { font-family: inherit; }
+input { font-family: inherit; }
+
+.winbtn {
+  -webkit-app-region: no-drag;
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.winbtn:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.winbtn.close:hover { background: #e81123; color: #fff; }
+
+/* frame:false draws no visible resize border of its own on Windows, so
+   these re-create edge/corner drag-to-resize hit regions inside the
+   content area (harmless alongside thickFrame's own native resize
+   handling, which only covers the invisible border just outside the
+   window rect). */
+.resize-edge, .resize-corner {
+  position: fixed;
+  -webkit-app-region: resize;
+  z-index: 1000;
+}
+.resize-top { top: 0; left: 8px; right: 8px; height: 4px; cursor: ns-resize; }
+.resize-bottom { bottom: 0; left: 8px; right: 8px; height: 4px; cursor: ns-resize; }
+.resize-left { left: 0; top: 8px; bottom: 8px; width: 4px; cursor: ew-resize; }
+.resize-right { right: 0; top: 8px; bottom: 8px; width: 4px; cursor: ew-resize; }
+.resize-tl { top: 0; left: 0; width: 8px; height: 8px; cursor: nwse-resize; }
+.resize-tr { top: 0; right: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+.resize-bl { bottom: 0; left: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+.resize-br { bottom: 0; right: 0; width: 8px; height: 8px; cursor: nwse-resize; }
