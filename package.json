@@ -16,6 +16,27 @@
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux"
   },
+  "build": {
+    "appId": "com.lightphonemanager.app",
+    "productName": "Light Phone Manager",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!node_modules/**/{CHANGELOG.md,README.md,readme.md}"
+    ],
+    "mac": {
+      "target": ["zip"],
+      "identity": null
+    },
+    "linux": {
+      "target": ["AppImage", "deb"]
+    },
+    "win": {
+      "target": ["nsis"]
+    }
+  },
   "dependencies": {
     "app-info-parser": "^1.1.6"
   },
