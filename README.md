@@ -1,10 +1,14 @@
 # Light Phone Manager
 
 A cross-platform desktop tool (Electron) for managing sideloaded tools on your
-[Light Phone 3](https://www.thelightphone.com/). Track community tool repos on
-GitHub, install and update them over USB with one click, or drag-and-drop an
+[Light Phone 3](https://www.thelightphone.com/) and providing automatic media backups. 
+Track community tool repos on GitHub, install and update them over USB with one click, or drag-and-drop an
 `.apk` file directly onto the tool. `adb` (Android Debug Bridge) is bundled in
 — no separate Android SDK install required.
+
+<img width="1586" height="1025" alt="Screenshot 2026-07-29 003741" src="https://github.com/user-attachments/assets/b43b6671-34c3-4b28-93cc-5ddcab61a522" />
+
+<img width="1512" height="973" alt="Screenshot 2026-07-29 004101" src="https://github.com/user-attachments/assets/5a82db65-c9e7-4b36-88bf-333f5e3d7c0e" />
 
 ## Features
 
