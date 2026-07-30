@@ -1,48 +1,56 @@
 {
-  "name": "light-phone-manager",
-  "productName": "Light Phone Manager",
-  "version": "1.0.0",
-  "description": "Manage sideloaded tools on your Light Phone 3 — track GitHub repos, install and update APKs, all with adb bundled in.",
-  "main": "src/main/main.js",
-  "author": "Light Phone Manager",
-  "license": "MIT",
-  "private": true,
-  "scripts": {
-    "start": "electron .",
-    "fetch-platform-tools": "node scripts/fetch-platform-tools.js",
-    "predist": "node scripts/fetch-platform-tools.js",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux"
-  },
-  "build": {
-    "appId": "com.lightphonemanager.app",
+    "name": "light-phone-manager",
     "productName": "Light Phone Manager",
-    "directories": {
-      "output": "dist"
+    "version": "1.0.0",
+    "description": "Manage sideloaded tools on your Light Phone 3 — track GitHub repos, install and update APKs, all with adb bundled in.",
+    "main": "src/main/main.js",
+    "author": "Light Phone Manager",
+    "license": "MIT",
+    "private": true,
+    "scripts": {
+        "start": "electron .",
+        "fetch-platform-tools": "node scripts/fetch-platform-tools.js",
+        "predist": "node scripts/fetch-platform-tools.js",
+        "dist": "electron-builder",
+        "dist:win": "electron-builder --win",
+        "dist:mac": "electron-builder --mac",
+        "dist:linux": "electron-builder --linux"
     },
-    "files": [
-      "**/*",
-      "!node_modules/**/{CHANGELOG.md,README.md,readme.md}"
-    ],
-    "mac": {
-      "target": ["zip"],
-      "identity": null
+    "build": {
+        "appId": "com.lightphonemanager.app",
+        "productName": "Light Phone Manager",
+        "directories": {
+            "output": "dist"
+        },
+        "files": [
+            "**/*",
+            "!node_modules/**/{CHANGELOG.md,README.md,readme.md}"
+        ],
+        "mac": {
+            "target": [
+                "zip"
+            ],
+            "identity": null
+        },
+        "linux": {
+            "target": [
+                "AppImage",
+                "deb"
+            ],
+            "maintainer": "Light Phone Manager <noreply@example.com>"
+        },
+        "win": {
+            "target": [
+                "nsis"
+            ]
+        }
     },
-    "linux": {
-      "target": ["AppImage", "deb"]
+    "dependencies": {
+        "app-info-parser": "^1.1.6"
     },
-    "win": {
-      "target": ["nsis"]
+    "devDependencies": {
+        "electron": "^35.7.5",
+        "electron-builder": "^24.13.3",
+        "extract-zip": "^2.0.1"
     }
-  },
-  "dependencies": {
-    "app-info-parser": "^1.1.6"
-  },
-  "devDependencies": {
-    "electron": "^35.7.5",
-    "electron-builder": "^24.13.3",
-    "extract-zip": "^2.0.1"
-  }
 }
