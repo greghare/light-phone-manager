@@ -26,8 +26,14 @@
             "**/*",
             "!node_modules/**/{CHANGELOG.md,README.md,readme.md}"
         ],
+        "asarUnpack": [
+            "node_modules/@ffmpeg-installer/**"
+        ],
         "mac": {
-            "target": ["zip", "dmg"],
+            "target": [
+                "zip",
+                "dmg"
+            ],
             "identity": null
         },
         "linux": {
@@ -44,6 +50,7 @@
         }
     },
     "dependencies": {
+        "@ffmpeg-installer/ffmpeg": "^1.1.0",
         "app-info-parser": "^1.1.6"
     },
     "devDependencies": {

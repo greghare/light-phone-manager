@@ -99,6 +99,28 @@ async function pullFile(serial, remotePath, localPath) {
   return localPath;
 }
 
+async function pushFile(serial, localPath, remotePath) {
+  await run(["-s", serial, "push", localPath, remotePath], { timeout: 60000 });
+  return remotePath;
+}
+
+async function moveFile(serial, fromPath, toPath) {
+  await run(["-s", serial, "shell", "mv", fromPath, toPath]);
+}
+
+async function deleteFile(serial, remotePath) {
+  await run(["-s", serial, "shell", "rm", "-f", remotePath]);
+}
+
+// Tells Android's media scanner about a file that changed on disk outside
+// of its usual APIs (e.g. adb push) — without this, LightOS keeps using
+// whatever it last indexed for that path instead of the new file.
+async function rescanMediaFile(serial, canonicalRemotePath) {
+  await run(["-s", serial, "shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE", "-d", `file://${canonicalRemotePath}`], {
+    allowFailure: true,
+  });
+}
+
 // Lists filenames in a directory on the device. Returns [] if the path
 // doesn't exist rather than throwing (e.g. no Pictures folder yet).
 async function listFiles(serial, remotePath) {
@@ -177,6 +199,20 @@ async function reboot(serial) {
   await run(["-s", serial, "reboot"]);
 }
 
+// Reads an `adb shell settings get <namespace> <key>` value, e.g.
+// getSetting(serial, "global", "window_animation_scale"). Returns null for
+// an unset key (adb prints the literal string "null" in that case) rather
+// than the string "null" itself.
+async function getSetting(serial, namespace, key) {
+  const { stdout } = await run(["-s", serial, "shell", "settings", "get", namespace, key], { allowFailure: true });
+  const value = stdout.trim();
+  return value && value !== "null" ? value : null;
+}
+
+async function putSetting(serial, namespace, key, value) {
+  await run(["-s", serial, "shell", "settings", "put", namespace, key, String(value)]);
+}
+
 module.exports = {
   listDevices,
   getDeviceInfo,
@@ -184,8 +220,14 @@ module.exports = {
   listThirdPartyPackages,
   getApkPath,
   pullFile,
+  pushFile,
+  moveFile,
+  deleteFile,
+  rescanMediaFile,
   listFiles,
   install,
   uninstall,
   reboot,
+  getSetting,
+  putSetting,
 };

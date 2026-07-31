@@ -66,7 +66,7 @@ function avatar(r, size) {
 
 const state = {
   device: { status: "none", serial: null, model: null, androidVersion: null, freeBytes: null, totalBytes: null },
-  section: "tools", // "tools" | "media" | "install"
+  section: "tools", // "tools" | "media" | "install" | "settings" | "ringtones"
   repos: [],
   nav: "repos",
   category: "all",
@@ -92,7 +92,21 @@ const state = {
   deviceRebooting: false,
   lightboxIndex: null,
   confirmDialog: null, // { message, confirmLabel, danger }
+  osSettings: { animationsOn: null, showExternalTools: null }, // null = unknown (no device connected yet)
+  osSettingsBusy: {}, // { animations?: bool, showExternalTools?: bool }
+  osSettingsBaseline: null, // { animationsOn, showExternalTools } as first observed this device connection — the value LightOS is actually running with until a reboot
+  ringtones: { ringtones: [], alerts: [] },
+  ringtonesLoading: false,
+  ringtoneBusy: {}, // remoteFilename -> bool ("uploading"/"restoring")
+  ringtonePlayLoading: {}, // remoteFilename -> bool (pulling the file to play it)
+  playingRingtone: null, // remoteFilename currently playing, or null
 };
+
+// One shared <audio> element for previewing ringtones/alerts — reused across
+// rows rather than creating a new one per row, so starting a new preview
+// always stops whatever was already playing.
+const ringtoneAudio = new Audio();
+ringtoneAudio.addEventListener("ended", () => setState({ playingRingtone: null }));
 
 let pendingConfirm = null;
 
@@ -245,12 +259,25 @@ function renderSidebar() {
       </div>`;
       })
       .join("")}
+    <div data-action="openRingtones" style="display:flex;align-items:center;justify-content:space-between;padding:6px 22px;cursor:pointer">
+      <span style="font-size:15px;font-weight:700;color:${state.section === "ringtones" ? "#fff" : "rgba(255,255,255,0.55)"};text-decoration:${state.section === "ringtones" ? "underline" : "none"}">Ringtones &amp; Alerts</span>
+    </div>
 
     <div style="flex:1"></div>
     <div style="padding:0 22px">
-      <div data-action="openInstallView" style="font-size:12px;color:rgba(255,255,255,0.4);cursor:pointer;text-decoration:underline">Install APK file…</div>
+      <div data-action="openInstallView" style="font-size:12px;color:rgba(255,255,255,0.4);cursor:pointer;text-decoration:underline;margin-bottom:14px">Install APK file…</div>
+      <div data-action="openSettings" style="display:flex;align-items:center;gap:8px;padding-bottom:16px;font-size:15px;font-weight:700;color:${state.section === "settings" ? "#fff" : "rgba(255,255,255,0.55)"};cursor:pointer">
+        ${gearIcon()} Settings
+      </div>
     </div>
   </div>`;
+}
+
+function gearIcon() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <circle cx="12" cy="12" r="3"></circle>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+  </svg>`;
 }
 
 function renderList() {
@@ -641,6 +668,192 @@ function renderInstallView() {
   </div>`;
 }
 
+// LightOS's own toggle style: a small circle joined to a line — hollow with
+// the circle on the left when off, filled with the circle slid to the right
+// end when on. `checked === null` means "unknown" (no device connected yet)
+// — shown off-but-disabled rather than guessing a state.
+function renderToggleSwitch({ checked, disabled, busy }) {
+  const on = !!checked;
+  // The knob's own fill is white when on, so its spinner needs to be dark to
+  // stay visible against it — and the reverse when off (transparent knob).
+  const spinner = on
+    ? `<div style="width:9px;height:9px;border-radius:50%;border:2px solid rgba(0,0,0,0.25);border-top-color:#000;animation:lp-spin 0.6s linear infinite"></div>`
+    : `<div style="width:9px;height:9px;border-radius:50%;border:2px solid rgba(255,255,255,0.25);border-top-color:#fff;animation:lp-spin 0.6s linear infinite"></div>`;
+  const circle = `<div style="width:14px;height:14px;border-radius:50%;flex-shrink:0;box-sizing:border-box;border:2px solid #fff;background:${on ? "#fff" : "transparent"};display:flex;align-items:center;justify-content:center">${busy ? spinner : ""}</div>`;
+  const line = `<div style="flex:1;height:2px;background:#fff;opacity:${on ? 1 : 0.5}"></div>`;
+  return `
+  <div style="position:relative;flex-shrink:0;width:34px;height:16px;display:flex;align-items:center">
+    ${on ? `${line}${circle}` : `${circle}${line}`}
+  </div>`;
+}
+
+function renderToggleRow({ title, description, checked, action, disabled, busy }) {
+  return `
+  <div ${disabled ? "" : `data-action="${action}"`} style="display:flex;align-items:center;gap:16px;padding:20px 0;border-bottom:1px solid rgba(255,255,255,0.08);cursor:${disabled ? "default" : "pointer"};opacity:${disabled ? 0.4 : 1}">
+    ${renderToggleSwitch({ checked, disabled, busy })}
+    <div style="min-width:0">
+      <div style="font-size:17px;font-weight:700;color:#fff">${esc(title)}</div>
+      ${description ? `<div style="font-size:13px;color:rgba(255,255,255,0.45);line-height:1.5;margin-top:4px">${esc(description)}</div>` : ""}
+    </div>
+  </div>`;
+}
+
+function renderSettingsView() {
+  const notConnected = state.device.status !== "connected";
+  const os = state.osSettings;
+  const busy = state.osSettingsBusy;
+  // LightOS keeps running with whatever Show External Tools was set to at
+  // last boot — a settings put takes effect immediately in the settings
+  // database, but not in the already-running process — so only point at a
+  // reboot when the current value has actually drifted from that baseline.
+  const baseline = state.osSettingsBaseline;
+  const needsReboot = baseline != null && os.showExternalTools !== baseline.showExternalTools;
+  return `
+  <div style="flex:1;overflow-y:auto">
+    <div style="padding:22px 24px 8px">
+      <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">Settings</div>
+    </div>
+    <div style="padding:8px 24px 60px;max-width:640px">
+      ${notConnected ? `<div style="font-size:12px;color:#f5a623;margin-bottom:8px">Connect your Light Phone 3 to view and change these settings.</div>` : ""}
+      ${renderToggleRow({
+        title: "OS Animations",
+        description: "Turns system animations on or off.",
+        checked: os.animationsOn,
+        action: "toggleAnimations",
+        disabled: notConnected || busy.animations,
+        busy: busy.animations,
+      })}
+      ${renderToggleRow({
+        title: "Show External Tools in LightOS",
+        description: "Allows viewing sideloaded tools inside LightOS.",
+        checked: os.showExternalTools,
+        action: "toggleShowExternalTools",
+        disabled: notConnected || busy.showExternalTools,
+        busy: busy.showExternalTools,
+      })}
+      ${
+        needsReboot
+          ? `<div style="padding-top:22px">
+              <button data-action="rebootDevice" ${state.deviceRebooting ? "disabled" : ""} style="background:transparent;border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:14px;font-weight:600;padding:9px 18px;border-radius:8px;cursor:${state.deviceRebooting ? "default" : "pointer"}">${state.deviceRebooting ? "Rebooting…" : "Reboot Light Phone"}</button>
+              <div style="font-size:12px;color:rgba(255,255,255,0.45);margin-top:10px">Some setting changes require a device reboot to take effect.</div>
+            </div>`
+          : ""
+      }
+    </div>
+  </div>`;
+}
+
+function playIcon() {
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>`;
+}
+
+function stopIcon() {
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="1"></rect></svg>`;
+}
+
+function uploadIcon() {
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>`;
+}
+
+function restoreIcon() {
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 .49-9.36L1 10"></path></svg>`;
+}
+
+// Fixed 30x30 box for every slot in the icon-button row — a <button>, or (in
+// the loading/busy case) a spinner sized and aligned identically — so all
+// three buttons stay on the same vertical line regardless of state or which
+// icon (they aren't all the same intrinsic size) is showing.
+function iconSlot({ icon, title, action, dataset, disabled, spinner }) {
+  const dataAttrs = Object.entries(dataset || {})
+    .map(([k, v]) => `data-${k}="${esc(v)}"`)
+    .join(" ");
+  if (spinner) {
+    return `<div style="display:inline-flex;width:30px;height:30px;align-items:center;justify-content:center;vertical-align:middle;margin-left:6px"><div style="width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,0.2);border-top-color:#fff;animation:lp-spin 0.8s linear infinite"></div></div>`;
+  }
+  return `
+  <button title="${esc(title)}" ${disabled ? "disabled" : `data-action="${action}" ${dataAttrs}`} style="background:transparent;border:1px solid rgba(255,255,255,0.2);color:${disabled ? "rgba(255,255,255,0.25)" : "#fff"};border-radius:6px;width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;cursor:${disabled ? "default" : "pointer"};margin-left:6px">${icon}</button>`;
+}
+
+function renderRingtoneRow(entry) {
+  const busy = state.ringtoneBusy[entry.remoteFilename];
+  const playLoading = state.ringtonePlayLoading[entry.remoteFilename];
+  const isPlaying = state.playingRingtone === entry.remoteFilename;
+  const playLabel = entry.overrideName || entry.deviceName;
+  return `
+  <tr style="border-bottom:1px solid rgba(255,255,255,0.06)">
+    <td style="padding:10px 14px 10px 0;font-size:14px;font-weight:600;color:#fff;white-space:nowrap">${esc(entry.deviceName)}</td>
+    <td style="padding:10px 14px;font-size:13px;color:rgba(255,255,255,0.5)">${entry.overrideName ? esc(entry.overrideName) : "—"}</td>
+    <td style="padding:10px 0;text-align:right;white-space:nowrap">
+      ${
+        busy
+          ? iconSlot({ spinner: true })
+          : `${
+              playLoading
+                ? iconSlot({ spinner: true })
+                : iconSlot({
+                    icon: isPlaying ? stopIcon() : playIcon(),
+                    title: isPlaying ? `Stop playing ${playLabel}` : `Play ${playLabel}`,
+                    action: "toggleRingtonePlayback",
+                    dataset: { remote: entry.remoteFilename },
+                  })
+            }${iconSlot({
+              icon: uploadIcon(),
+              title: `Replace ${entry.deviceName} with a file from this PC`,
+              action: "uploadRingtone",
+              dataset: { remote: entry.remoteFilename, backup: entry.backupFilename },
+            })}${iconSlot({
+              icon: restoreIcon(),
+              title: entry.hasBackup ? `Restore the original ${entry.deviceName} sound` : "No custom sound set",
+              action: "restoreRingtone",
+              dataset: { remote: entry.remoteFilename, backup: entry.backupFilename },
+              disabled: !entry.hasBackup,
+            })}`
+      }
+    </td>
+  </tr>`;
+}
+
+function renderRingtoneTable(title, entries) {
+  return `
+  <div style="margin-bottom:36px">
+    ${title ? `<div style="font-size:20px;font-weight:700;color:#fff;margin-bottom:12px">${esc(title)}</div>` : ""}
+    ${
+      entries.length === 0
+        ? `<div style="font-size:13px;color:rgba(255,255,255,0.35);padding:8px 0">None found on the device.</div>`
+        : `<table style="width:100%;border-collapse:collapse">
+            <thead>
+              <tr style="border-bottom:1px solid rgba(255,255,255,0.15)">
+                <th style="text-align:left;padding:0 14px 8px 0;font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase">Device Ringtone Name</th>
+                <th style="text-align:left;padding:0 14px 8px;font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase">Override Ringtone Name</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>${entries.map(renderRingtoneRow).join("")}</tbody>
+          </table>`
+    }
+  </div>`;
+}
+
+function renderRingtonesView() {
+  const notConnected = state.device.status !== "connected";
+  const { ringtones, alerts } = state.ringtones;
+  return `
+  <div style="flex:1;overflow-y:auto">
+    <div style="padding:22px 24px 8px">
+      <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">Ringtones &amp; Alerts</div>
+    </div>
+    <div style="padding:8px 24px 60px;max-width:760px">
+      ${
+        notConnected
+          ? `<div style="font-size:12px;color:#f5a623;margin-bottom:8px">Connect your Light Phone 3 to view and change these sounds.</div>`
+          : state.ringtonesLoading
+          ? `<div style="font-size:13px;color:rgba(255,255,255,0.4);padding:8px 0">Loading…</div>`
+          : `${renderRingtoneTable(null, ringtones)}${renderRingtoneTable("Messages", alerts)}`
+      }
+    </div>
+  </div>`;
+}
+
 function renderAddRepoModal() {
   if (!state.showAddRepo) return "";
   return `
@@ -728,6 +941,10 @@ function render() {
           ? renderMediaView()
           : state.section === "install"
           ? renderInstallView()
+          : state.section === "settings"
+          ? renderSettingsView()
+          : state.section === "ringtones"
+          ? renderRingtonesView()
           : `${renderList()}${renderDetail()}`
       }
       ${renderAddRepoModal()}
@@ -758,6 +975,84 @@ const actions = {
   },
   openInstallView() {
     setState({ section: "install" });
+  },
+  openSettings() {
+    setState({ section: "settings" });
+  },
+  openRingtones() {
+    setState({ section: "ringtones" });
+    refreshRingtones();
+  },
+  async toggleRingtonePlayback(ds) {
+    if (state.playingRingtone === ds.remote) {
+      stopRingtonePlayback();
+      return;
+    }
+    if (state.device.status !== "connected" || state.ringtonePlayLoading[ds.remote]) return;
+    stopRingtonePlayback();
+    setState({ ringtonePlayLoading: { ...state.ringtonePlayLoading, [ds.remote]: true } });
+    try {
+      const url = await window.api.ringtonesGetPlayUrl(ds.remote);
+      ringtoneAudio.src = url;
+      await ringtoneAudio.play();
+      setState({ playingRingtone: ds.remote });
+    } catch (err) {
+      showToast(err.message || "Couldn't play that sound");
+    } finally {
+      setState({ ringtonePlayLoading: { ...state.ringtonePlayLoading, [ds.remote]: false } });
+    }
+  },
+  async uploadRingtone(ds) {
+    if (state.device.status !== "connected" || state.ringtoneBusy[ds.remote]) return;
+    stopRingtonePlayback();
+    setState({ ringtoneBusy: { ...state.ringtoneBusy, [ds.remote]: true } });
+    try {
+      const result = await window.api.ringtonesUpload(ds.remote, ds.backup);
+      if (result) setState({ ringtones: result });
+    } catch (err) {
+      showToast(err.message || "Couldn't replace that sound");
+    } finally {
+      setState({ ringtoneBusy: { ...state.ringtoneBusy, [ds.remote]: false } });
+    }
+  },
+  async restoreRingtone(ds) {
+    if (state.device.status !== "connected" || state.ringtoneBusy[ds.remote]) return;
+    stopRingtonePlayback();
+    setState({ ringtoneBusy: { ...state.ringtoneBusy, [ds.remote]: true } });
+    try {
+      const result = await window.api.ringtonesRestore(ds.remote, ds.backup);
+      if (result) setState({ ringtones: result });
+    } catch (err) {
+      showToast(err.message || "Couldn't restore that sound");
+    } finally {
+      setState({ ringtoneBusy: { ...state.ringtoneBusy, [ds.remote]: false } });
+    }
+  },
+  async toggleAnimations() {
+    if (state.device.status !== "connected" || state.osSettingsBusy.animations) return;
+    const next = !state.osSettings.animationsOn;
+    setState({ osSettingsBusy: { ...state.osSettingsBusy, animations: true } });
+    try {
+      const os = await window.api.osSettingsSetAnimations(next);
+      setState({ osSettings: os });
+    } catch (err) {
+      showToast(err.message || "Couldn't change OS animations");
+    } finally {
+      setState({ osSettingsBusy: { ...state.osSettingsBusy, animations: false } });
+    }
+  },
+  async toggleShowExternalTools() {
+    if (state.device.status !== "connected" || state.osSettingsBusy.showExternalTools) return;
+    const next = !state.osSettings.showExternalTools;
+    setState({ osSettingsBusy: { ...state.osSettingsBusy, showExternalTools: true } });
+    try {
+      const os = await window.api.osSettingsSetShowExternalTools(next);
+      setState({ osSettings: os });
+    } catch (err) {
+      showToast(err.message || "Couldn't change that setting");
+    } finally {
+      setState({ osSettingsBusy: { ...state.osSettingsBusy, showExternalTools: false } });
+    }
   },
   selectNav(ds) {
     setState({ section: "tools", nav: ds.nav, category: "all" });
@@ -974,6 +1269,39 @@ const actions = {
   },
 };
 
+// Records osSettings and, the first time a real (non-null) value is seen
+// for this device connection, freezes it as the baseline LightOS is
+// actually running with — later toggles change state.osSettings but leave
+// the baseline alone, so the Settings screen can tell "written to the
+// settings db" apart from "in effect until a reboot". Cleared back to
+// null on disconnect so the next connection captures its own baseline.
+function applyOsSettings(osSettings) {
+  if (osSettings.showExternalTools === null && osSettings.animationsOn === null) {
+    state.osSettingsBaseline = null;
+  } else if (state.osSettingsBaseline == null) {
+    state.osSettingsBaseline = { ...osSettings };
+  }
+  setState({ osSettings });
+}
+
+function stopRingtonePlayback() {
+  if (state.playingRingtone == null) return;
+  ringtoneAudio.pause();
+  ringtoneAudio.currentTime = 0;
+  setState({ playingRingtone: null });
+}
+
+async function refreshRingtones() {
+  if (state.device.status !== "connected") return;
+  setState({ ringtonesLoading: true });
+  try {
+    const data = await window.api.ringtonesList();
+    setState({ ringtones: data });
+  } finally {
+    setState({ ringtonesLoading: false });
+  }
+}
+
 async function inspectAndShowDrop(filePath) {
   try {
     const parsed = await window.api.apkInspect(filePath);
@@ -1023,7 +1351,12 @@ document.addEventListener("keydown", (e) => {
 
 /* ---------- IPC subscriptions ---------- */
 
-window.api.onDeviceUpdate((device) => setState({ device }));
+window.api.onDeviceUpdate((device) => {
+  const justConnected = device.status === "connected" && state.device.status !== "connected";
+  setState({ device });
+  if (justConnected && state.section === "ringtones") refreshRingtones();
+});
+window.api.onOsSettingsUpdate((osSettings) => applyOsSettings(osSettings));
 window.api.onReposChanged((repos) => setState({ repos }));
 window.api.onInstallLog(({ repoId, line }) => {
   const existing = state.logs[repoId] || [];
@@ -1041,11 +1374,12 @@ document.addEventListener("dblclick", (e) => {
 
 (async function boot() {
   const mediaKeys = ["photos", "screenshots", "zero", "videos"];
-  const [device, repos, windowMaximized, mediaSettings, ...mediaLists] = await Promise.all([
+  const [device, repos, windowMaximized, mediaSettings, osSettings, ...mediaLists] = await Promise.all([
     window.api.deviceGet(),
     window.api.reposList(),
     window.api.windowIsMaximized(),
     window.api.mediaGetSettings(),
+    window.api.osSettingsGet(),
     ...mediaKeys.map((k) => window.api.mediaList(k)),
   ]);
   const media = {};
@@ -1058,4 +1392,5 @@ document.addEventListener("dblclick", (e) => {
     mediaTypes: mediaSettings.types,
     media,
   });
+  applyOsSettings(osSettings);
 })();

@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld("api", {
   deviceRefresh: () => ipcRenderer.invoke("device:refresh"),
   deviceReboot: () => ipcRenderer.invoke("device:reboot"),
 
+  osSettingsGet: () => ipcRenderer.invoke("os-settings:get"),
+  osSettingsSetAnimations: (on) => ipcRenderer.invoke("os-settings:setAnimations", on),
+  osSettingsSetShowExternalTools: (on) => ipcRenderer.invoke("os-settings:setShowExternalTools", on),
+
   installStart: (repoId, version) => ipcRenderer.invoke("install:start", { repoId, version }),
   installLatest: (repoId) => ipcRenderer.invoke("install:latest", repoId),
   installUpdateAll: () => ipcRenderer.invoke("install:updateAll"),
@@ -38,12 +42,18 @@ contextBridge.exposeInMainWorld("api", {
   mediaBackupNow: () => ipcRenderer.invoke("media:backupNow"),
   mediaOpenFolder: (key) => ipcRenderer.invoke("media:openFolder", key),
 
+  ringtonesList: () => ipcRenderer.invoke("ringtones:list"),
+  ringtonesUpload: (remoteFilename, backupFilename) => ipcRenderer.invoke("ringtones:pickAndUpload", { remoteFilename, backupFilename }),
+  ringtonesRestore: (remoteFilename, backupFilename) => ipcRenderer.invoke("ringtones:restore", { remoteFilename, backupFilename }),
+  ringtonesGetPlayUrl: (remoteFilename) => ipcRenderer.invoke("ringtones:getPlayUrl", { remoteFilename }),
+
   windowMinimize: () => ipcRenderer.invoke("window:minimize"),
   windowToggleMaximize: () => ipcRenderer.invoke("window:toggleMaximize"),
   windowClose: () => ipcRenderer.invoke("window:close"),
   windowIsMaximized: () => ipcRenderer.invoke("window:isMaximized"),
 
   onDeviceUpdate: (cb) => on("device:update", cb),
+  onOsSettingsUpdate: (cb) => on("os-settings:update", cb),
   onReposChanged: (cb) => on("repos:changed", cb),
   onInstallLog: (cb) => on("install:log", cb),
   onToast: (cb) => on("toast", cb),

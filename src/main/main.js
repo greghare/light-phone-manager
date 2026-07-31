@@ -11,12 +11,21 @@ const github = require("./github");
 const apkLib = require("./apk");
 const store = require("./store");
 const mediaLib = require("./media");
+const ringtonesLib = require("./ringtones");
+const ffmpegLib = require("./ffmpeg");
 
 const DEVICE_POLL_MS = 2500;
 
 let mainWindow = null;
 let deviceState = { status: "none", serial: null, model: null, androidVersion: null, freeBytes: null, totalBytes: null };
 let pollTimer = null;
+
+// Mirrors a couple of LightOS device settings (not app state, so this isn't
+// persisted to store.js — it's read fresh off the device whenever one is
+// connected). null means "unknown" (no device connected yet to read it from).
+const ANIMATION_SCALE_KEYS = ["window_animation_scale", "animator_duration_scale", "transition_animation_scale"];
+const SHOW_EXTERNAL_TOOLS_KEY = "LIGHTOS_SHOW_EXTERNAL_TOOLS";
+let osSettings = { animationsOn: null, showExternalTools: null };
 
 function newId(prefix) {
   return `${prefix}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
@@ -64,14 +73,17 @@ async function pollDevice(force = false) {
 
     if (devices.length === 0) {
       setDeviceState({ status: "none", serial: null, model: null, androidVersion: null, freeBytes: null, totalBytes: null });
+      resetOsSettings();
       return;
     }
     if (authorized.length === 0) {
       setDeviceState({ status: "unauthorized", serial: devices[0].serial, model: devices[0].model, androidVersion: null, freeBytes: null, totalBytes: null });
+      resetOsSettings();
       return;
     }
     if (authorized.length > 1) {
       setDeviceState({ status: "multiple", serial: null, model: null, androidVersion: null, freeBytes: null, totalBytes: null });
+      resetOsSettings();
       return;
     }
 
@@ -93,8 +105,32 @@ async function pollDevice(force = false) {
     refreshInstalledVersions(dev.serial).catch((err) => console.error("refreshInstalledVersions failed:", err));
     discoverDeviceApps(dev.serial).catch((err) => console.error("discoverDeviceApps failed:", err));
     backupAllMediaNow(dev.serial).catch((err) => console.error("backupAllMediaNow failed:", err));
+    refreshOsSettings(dev.serial).catch((err) => console.error("refreshOsSettings failed:", err));
   } catch (err) {
     setDeviceState({ status: "error", serial: null, model: null, androidVersion: null, freeBytes: null, totalBytes: null, error: err.message });
+    resetOsSettings();
+  }
+}
+
+function resetOsSettings() {
+  if (osSettings.animationsOn !== null || osSettings.showExternalTools !== null) {
+    osSettings = { animationsOn: null, showExternalTools: null };
+    send("os-settings:update", osSettings);
+  }
+}
+
+async function refreshOsSettings(serial) {
+  const [scaleRaw, showExternalRaw] = await Promise.all([
+    adb.getSetting(serial, "global", ANIMATION_SCALE_KEYS[0]),
+    adb.getSetting(serial, "system", SHOW_EXTERNAL_TOOLS_KEY),
+  ]);
+  const next = {
+    animationsOn: scaleRaw != null && parseFloat(scaleRaw) > 0,
+    showExternalTools: showExternalRaw === "1",
+  };
+  if (JSON.stringify(next) !== JSON.stringify(osSettings)) {
+    osSettings = next;
+    send("os-settings:update", osSettings);
   }
 }
 
@@ -244,6 +280,13 @@ async function refreshThumbnails(backupDir) {
   } finally {
     thumbnailingInProgress = false;
   }
+}
+
+// ---------- ringtones & alerts ----------
+
+async function fetchRingtoneEntries(serial) {
+  const filenames = await adb.listFiles(serial, ringtonesLib.RINGTONE_DIR);
+  return ringtonesLib.buildEntries(filenames, store.getSettings().ringtoneOverrides || {});
 }
 
 function requireConnectedDevice() {
@@ -465,6 +508,29 @@ function registerIpc() {
     // The device drops off adb immediately on reboot — reflect that right
     // away instead of waiting for the next poll tick to notice it's gone.
     setDeviceState({ status: "none", serial: null, model: null, androidVersion: null, freeBytes: null, totalBytes: null });
+  });
+
+  ipcMain.handle("os-settings:get", () => osSettings);
+
+  ipcMain.handle("os-settings:setAnimations", async (_evt, on) => {
+    const serial = requireConnectedDevice();
+    const scale = on ? "0.5" : "0";
+    for (const key of ANIMATION_SCALE_KEYS) {
+      await adb.putSetting(serial, "global", key, scale);
+    }
+    osSettings = { ...osSettings, animationsOn: on };
+    send("os-settings:update", osSettings);
+    send("toast", { message: `OS animations turned ${on ? "on" : "off"}` });
+    return osSettings;
+  });
+
+  ipcMain.handle("os-settings:setShowExternalTools", async (_evt, on) => {
+    const serial = requireConnectedDevice();
+    await adb.putSetting(serial, "system", SHOW_EXTERNAL_TOOLS_KEY, on ? "1" : "0");
+    osSettings = { ...osSettings, showExternalTools: on };
+    send("os-settings:update", osSettings);
+    send("toast", { message: `External tools ${on ? "shown" : "hidden"} in LightOS` });
+    return osSettings;
   });
 
   ipcMain.handle("repos:add", async (_evt, rawUrl) => {
@@ -713,6 +779,79 @@ function registerIpc() {
     const serial = requireConnectedDevice();
     if (!store.getSettings().photoBackupDir) throw new Error("Choose a backup folder first.");
     await backupAllMediaNow(serial);
+  });
+
+  ipcMain.handle("ringtones:list", async () => {
+    if (deviceState.status !== "connected") return { ringtones: [], alerts: [] };
+    return fetchRingtoneEntries(deviceState.serial);
+  });
+
+  ipcMain.handle("ringtones:pickAndUpload", async (_evt, { remoteFilename, backupFilename }) => {
+    const serial = requireConnectedDevice();
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Select an audio file",
+      filters: [{ name: "Audio", extensions: ["mp3", "m4a", "aac", "wav", "ogg", "flac", "wma", "aiff", "opus"] }],
+      properties: ["openFile"],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const srcPath = result.filePaths[0];
+    // Shown in the "Override Ringtone Name" column: the file the user picked,
+    // renamed to .m4a since that's the format it's actually stored as on the
+    // device now (the on-device filename itself stays the standardized
+    // "ringtone_<key>.m4a" — this is just the human-readable label).
+    const originalName = `${path.parse(srcPath).name}.m4a`;
+
+    const remotePath = `${ringtonesLib.RINGTONE_DIR}/${remoteFilename}`;
+    const backupPath = `${ringtonesLib.RINGTONE_DIR}/${backupFilename}`;
+
+    // Back up the stock sound the first time this device ringtone gets
+    // overridden — and never again, since a second backup here would
+    // overwrite the stock file with whatever the last custom upload was.
+    const existing = await adb.listFiles(serial, ringtonesLib.RINGTONE_DIR);
+    if (!existing.includes(backupFilename)) {
+      await adb.moveFile(serial, remotePath, backupPath);
+    }
+
+    const tmpOut = path.join(store.getCacheDir(), `_ringtone-${Date.now()}.m4a`);
+    try {
+      await ffmpegLib.convertToM4a(srcPath, tmpOut);
+      await adb.pushFile(serial, tmpOut, remotePath);
+    } finally {
+      fs.rm(tmpOut, { force: true }, () => {});
+    }
+    await adb.rescanMediaFile(serial, `${ringtonesLib.RINGTONE_DIR_CANONICAL}/${remoteFilename}`);
+
+    store.setSettings({ ringtoneOverrides: { ...(store.getSettings().ringtoneOverrides || {}), [remoteFilename]: originalName } });
+    send("toast", { message: `Replaced with ${originalName}` });
+    return fetchRingtoneEntries(serial);
+  });
+
+  ipcMain.handle("ringtones:restore", async (_evt, { remoteFilename, backupFilename }) => {
+    const serial = requireConnectedDevice();
+    const remotePath = `${ringtonesLib.RINGTONE_DIR}/${remoteFilename}`;
+    const backupPath = `${ringtonesLib.RINGTONE_DIR}/${backupFilename}`;
+    await adb.deleteFile(serial, remotePath);
+    await adb.moveFile(serial, backupPath, remotePath);
+    await adb.rescanMediaFile(serial, `${ringtonesLib.RINGTONE_DIR_CANONICAL}/${remoteFilename}`);
+
+    const overrides = { ...(store.getSettings().ringtoneOverrides || {}) };
+    delete overrides[remoteFilename];
+    store.setSettings({ ringtoneOverrides: overrides });
+    send("toast", { message: "Restored the original sound" });
+    return fetchRingtoneEntries(serial);
+  });
+
+  ipcMain.handle("ringtones:getPlayUrl", async (_evt, { remoteFilename }) => {
+    const serial = requireConnectedDevice();
+    const remotePath = `${ringtonesLib.RINGTONE_DIR}/${remoteFilename}`;
+    const localDir = path.join(store.getCacheDir(), "ringtone-playback");
+    fs.mkdirSync(localDir, { recursive: true });
+    // Always re-pull rather than reusing a cached copy — the file at this
+    // path may have just been replaced or restored, and a stale cached copy
+    // would play the wrong sound.
+    const localPath = path.join(localDir, remoteFilename);
+    await adb.pullFile(serial, remotePath, localPath);
+    return pathToFileURL(localPath).href;
   });
 
   ipcMain.handle("window:minimize", () => mainWindow?.minimize());
