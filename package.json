@@ -1,7 +1,7 @@
 {
     "name": "light-phone-manager",
     "productName": "Light Phone Manager",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "Manage sideloaded tools on your Light Phone 3 — track GitHub repos, install and update APKs, all with adb bundled in.",
     "main": "src/main/main.js",
     "author": "Light Phone Manager",
