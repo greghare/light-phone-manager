@@ -289,6 +289,48 @@ async function fetchRingtoneEntries(serial) {
   return ringtonesLib.buildEntries(filenames, store.getSettings().ringtoneOverrides || {});
 }
 
+// ---------- app logs ----------
+
+let activeLogcat = null; // { repoId, child }
+
+function stopLogcat() {
+  if (activeLogcat) {
+    activeLogcat.child.kill();
+    activeLogcat = null;
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function startAppLogs(repoId) {
+  stopLogcat();
+  const serial = requireConnectedDevice();
+  const repo = store.getRepos().find((r) => r.id === repoId);
+  if (!repo) throw new Error("Repo not found.");
+  if (!repo.packageId) throw new Error("No package to show logs for.");
+
+  let pid = await adb.getPid(serial, repo.packageId);
+  if (!pid) {
+    // Not running yet — launch it and give it a moment to start so logcat
+    // has a pid to filter on, rather than reporting "not running" for an
+    // app the user just asked to view logs for.
+    await adb.launchApp(serial, repo.packageId);
+    for (let i = 0; i < 10 && !pid; i++) {
+      await sleep(300);
+      pid = await adb.getPid(serial, repo.packageId);
+    }
+  }
+  if (!pid) throw new Error(`${repo.appName || repo.name} isn't running.`);
+
+  const child = adb.startLogcat(serial, pid, (line) => send("applogs:line", { repoId, line }));
+  activeLogcat = { repoId, child };
+  child.on("close", () => {
+    if (activeLogcat && activeLogcat.child === child) activeLogcat = null;
+  });
+}
+
 function requireConnectedDevice() {
   if (deviceState.status !== "connected") {
     throw new Error(
@@ -673,6 +715,22 @@ function registerIpc() {
     send("toast", { message: `${repo.appName || repo.name} removed from device` });
   });
 
+  ipcMain.handle("app:launch", async (_evt, repoId) => {
+    const serial = requireConnectedDevice();
+    const repo = store.getRepos().find((r) => r.id === repoId);
+    if (!repo) throw new Error("Repo not found.");
+    if (!repo.packageId) throw new Error("No package to launch.");
+    await adb.launchApp(serial, repo.packageId);
+  });
+
+  ipcMain.handle("applogs:start", async (_evt, repoId) => {
+    await startAppLogs(repoId);
+  });
+
+  ipcMain.handle("applogs:stop", () => {
+    stopLogcat();
+  });
+
   ipcMain.handle("apk:pickFile", async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "Select an APK to install",
@@ -900,6 +958,7 @@ if (!gotLock) {
 
   app.on("window-all-closed", () => {
     if (pollTimer) clearInterval(pollTimer);
+    stopLogcat();
     if (process.platform !== "darwin") app.quit();
   });
 }

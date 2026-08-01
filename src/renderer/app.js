@@ -92,6 +92,8 @@ const state = {
   deviceRebooting: false,
   lightboxIndex: null,
   confirmDialog: null, // { message, confirmLabel, danger }
+  contextMenu: null, // { x, y, repoId }
+  appLogs: null, // { repoId, lines: string[], loading, error }
   osSettings: { animationsOn: null, showExternalTools: null }, // null = unknown (no device connected yet)
   osSettingsBusy: {}, // { animations?: bool, showExternalTools?: bool }
   osSettingsBaseline: null, // { animationsOn, showExternalTools } as first observed this device connection — the value LightOS is actually running with until a reboot
@@ -290,7 +292,7 @@ function renderList() {
       const dotColor = !r.installedVersion ? "rgba(255,255,255,0.25)" : updateAvailable ? "#f5a623" : "#34c759";
       const rowBg = r.id === state.selectedId ? "rgba(255,255,255,0.08)" : "transparent";
       return `
-      <div data-action="selectRepo" data-id="${esc(r.id)}" style="display:flex;align-items:center;gap:12px;padding:11px 14px;margin:0 10px 2px;border-radius:12px;cursor:pointer;background:${rowBg}">
+      <div data-action="selectRepo" data-context-repo="${esc(r.id)}" data-id="${esc(r.id)}" style="display:flex;align-items:center;gap:12px;padding:11px 14px;margin:0 10px 2px;border-radius:12px;cursor:pointer;background:${rowBg}">
         ${avatar(r, 36)}
         <div style="flex:1;min-width:0">
           <div style="font-size:16px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.name)}</div>
@@ -925,6 +927,47 @@ function renderConfirmModal() {
   </div>`;
 }
 
+function renderContextMenu() {
+  const m = state.contextMenu;
+  if (!m) return "";
+  const repo = state.repos.find((r) => r.id === m.repoId);
+  if (!repo) return "";
+  const disabled = !repo.packageId || state.device.status !== "connected";
+  const title = state.device.status !== "connected" ? "Connect your Light Phone 3 to launch apps" : !repo.packageId ? "No package to launch" : "";
+  const itemStyle = (dis) =>
+    `padding:9px 12px;border-radius:7px;font-size:13px;font-weight:600;color:${dis ? "rgba(255,255,255,0.3)" : "#fff"};cursor:${dis ? "default" : "pointer"}`;
+  const hoverAttrs = `onmouseover="this.style.background='rgba(255,255,255,0.08)'" onmouseout="this.style.background='transparent'"`;
+  return `
+  <div data-action="closeContextMenu" style="position:fixed;inset:0;z-index:50"></div>
+  <div style="position:fixed;left:${m.x}px;top:${m.y}px;z-index:51;min-width:170px;background:#181818;border:1px solid rgba(255,255,255,0.1);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,0.55);padding:6px;">
+    <div data-action="launchApp" data-id="${esc(repo.id)}" title="${esc(title)}" style="${itemStyle(disabled)}" ${disabled ? "" : hoverAttrs}>Launch App</div>
+    <div data-action="viewAppLogs" data-id="${esc(repo.id)}" title="${esc(title)}" style="${itemStyle(disabled)}" ${disabled ? "" : hoverAttrs}>View Logs</div>
+  </div>`;
+}
+
+function renderAppLogsModal() {
+  const a = state.appLogs;
+  if (!a) return "";
+  const repo = state.repos.find((r) => r.id === a.repoId);
+  return `
+  <div style="position:absolute;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:40">
+    <div style="width:640px;max-width:90%;height:70%;background:#0a0a0a;border-radius:18px;padding:22px;box-shadow:0 30px 80px rgba(0,0,0,0.6);display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-shrink:0">
+        <div style="font-size:16px;font-weight:700;color:#fff">${esc(repo ? repo.name : "App")} logs</div>
+        <div data-action="closeAppLogs" style="font-size:12px;font-weight:600;color:rgba(255,255,255,0.5);cursor:pointer">CLOSE</div>
+      </div>
+      ${
+        a.error
+          ? `<div style="font-size:13px;color:#f5a623">${esc(a.error)}</div>`
+          : `<div data-role="appLogsBox" style="flex:1;overflow-y:auto;background:#000;border-radius:10px;padding:12px 14px;font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:12px;color:#8fd19e">
+              ${a.lines.map((l) => `<div style="white-space:pre-wrap;line-height:1.6">${esc(l)}</div>`).join("")}
+              ${a.lines.length === 0 ? `<div style="color:rgba(255,255,255,0.3)">${a.loading ? "Waiting for output…" : "No output yet."}</div>` : ""}
+            </div>`
+      }
+    </div>
+  </div>`;
+}
+
 function renderToast() {
   if (!state.toast) return "";
   return `<div style="position:absolute;bottom:24px;left:50%;transform:translateX(-50%);background:#0a0a0a;color:#fff;font-size:13px;font-weight:600;padding:10px 18px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.55);z-index:20">${esc(state.toast)}</div>`;
@@ -950,11 +993,15 @@ function render() {
       ${renderAddRepoModal()}
       ${renderDropModal()}
       ${renderConfirmModal()}
+      ${renderContextMenu()}
+      ${renderAppLogsModal()}
       ${renderToast()}
     </div>
   `;
   wireVideoDurations();
   wireInstallDropZone();
+  const logsBox = app.querySelector('[data-role="appLogsBox"]');
+  if (logsBox) logsBox.scrollTop = logsBox.scrollHeight;
 }
 
 /* ---------- actions ---------- */
@@ -1128,14 +1175,55 @@ const actions = {
     });
   },
   async performUninstall(ds) {
+    const listBefore = deriveList();
+    const removedIndex = listBefore.findIndex((r) => r.id === ds.id);
     setState({ activeRepoId: ds.id, activeLabel: "Removing", logs: { ...state.logs, [ds.id]: [] }, logOpen: { ...state.logOpen, [ds.id]: true } });
     try {
       await window.api.uninstallStart(ds.id);
+      // Uninstalling can drop the app out of the current view entirely (e.g.
+      // it no longer belongs in "Installed") — if that's what was selected,
+      // move the selection to whatever now sits at that spot in the list
+      // rather than leaving detail view pointed at a row that's gone.
+      if (state.selectedId === ds.id && removedIndex !== -1) {
+        const listAfter = deriveList();
+        if (!listAfter.some((r) => r.id === ds.id)) {
+          const next = listAfter[removedIndex] || listAfter[removedIndex - 1] || null;
+          setState({ selectedId: next ? next.id : null });
+        }
+      }
     } catch (err) {
       showToast(err.message || "Uninstall failed");
     } finally {
       if (state.activeRepoId === ds.id) setState({ activeRepoId: null });
     }
+  },
+  closeContextMenu() {
+    setState({ contextMenu: null });
+  },
+  async launchApp(ds) {
+    const repo = state.repos.find((r) => r.id === ds.id);
+    setState({ contextMenu: null });
+    if (!repo || !repo.packageId || state.device.status !== "connected") return;
+    try {
+      await window.api.appLaunch(ds.id);
+    } catch (err) {
+      showToast(err.message || "Launch failed");
+    }
+  },
+  async viewAppLogs(ds) {
+    const repo = state.repos.find((r) => r.id === ds.id);
+    setState({ contextMenu: null });
+    if (!repo || !repo.packageId || state.device.status !== "connected") return;
+    setState({ appLogs: { repoId: ds.id, lines: [], loading: true, error: null } });
+    try {
+      await window.api.appLogsStart(ds.id);
+    } catch (err) {
+      setState({ appLogs: { repoId: ds.id, lines: [], loading: false, error: err.message || "Couldn't read logs" } });
+    }
+  },
+  closeAppLogs() {
+    window.api.appLogsStop();
+    setState({ appLogs: null });
   },
   stopTracking(ds) {
     const repo = state.repos.find((r) => r.id === ds.id);
@@ -1322,6 +1410,13 @@ document.addEventListener("click", (e) => {
   if (fn) fn(el.dataset, e);
 });
 
+document.addEventListener("contextmenu", (e) => {
+  const el = e.target.closest("[data-context-repo]");
+  if (!el) return;
+  e.preventDefault();
+  setState({ contextMenu: { x: e.clientX, y: e.clientY, repoId: el.dataset.contextRepo } });
+});
+
 document.addEventListener("input", (e) => {
   const bind = e.target.dataset && e.target.dataset.bind;
   if (bind) {
@@ -1361,6 +1456,10 @@ window.api.onReposChanged((repos) => setState({ repos }));
 window.api.onInstallLog(({ repoId, line }) => {
   const existing = state.logs[repoId] || [];
   setState({ logs: { ...state.logs, [repoId]: [...existing, line] } });
+});
+window.api.onAppLogsLine(({ repoId, line }) => {
+  if (!state.appLogs || state.appLogs.repoId !== repoId) return;
+  setState({ appLogs: { ...state.appLogs, lines: [...state.appLogs.lines, line], loading: false } });
 });
 window.api.onToast(({ message }) => showToast(message));
 window.api.onWindowMaximizedChange((maximized) => setState({ windowMaximized: maximized }));

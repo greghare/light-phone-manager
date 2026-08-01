@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld("api", {
   installLatest: (repoId) => ipcRenderer.invoke("install:latest", repoId),
   installUpdateAll: () => ipcRenderer.invoke("install:updateAll"),
   uninstallStart: (repoId) => ipcRenderer.invoke("uninstall:start", repoId),
+  appLaunch: (repoId) => ipcRenderer.invoke("app:launch", repoId),
+  appLogsStart: (repoId) => ipcRenderer.invoke("applogs:start", repoId),
+  appLogsStop: () => ipcRenderer.invoke("applogs:stop"),
 
   apkPickFile: () => ipcRenderer.invoke("apk:pickFile"),
   apkInspect: (filePath) => ipcRenderer.invoke("apk:inspect", filePath),
@@ -56,6 +59,7 @@ contextBridge.exposeInMainWorld("api", {
   onOsSettingsUpdate: (cb) => on("os-settings:update", cb),
   onReposChanged: (cb) => on("repos:changed", cb),
   onInstallLog: (cb) => on("install:log", cb),
+  onAppLogsLine: (cb) => on("applogs:line", cb),
   onToast: (cb) => on("toast", cb),
   onWindowMaximizedChange: (cb) => on("window:maximized", cb),
   onMediaChanged: (cb) => on("media:changed", cb),

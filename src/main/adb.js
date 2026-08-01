@@ -195,6 +195,42 @@ function uninstall(serial, packageId, onLine) {
   });
 }
 
+// Launches an app's default launcher activity and brings it to the
+// foreground. `monkey -c android.intent.category.LAUNCHER` finds the right
+// activity itself, so this works without knowing the app's activity name.
+async function launchApp(serial, packageId) {
+  await run(["-s", serial, "shell", "monkey", "-p", packageId, "-c", "android.intent.category.LAUNCHER", "1"]);
+}
+
+// Returns the running process id for a package, or null if it's not running.
+// `pidof` can print more than one pid for a multi-process app — the first is
+// always its main process.
+async function getPid(serial, packageId) {
+  const { stdout } = await run(["-s", serial, "shell", "pidof", packageId], { allowFailure: true });
+  const pid = stdout.trim().split(/\s+/)[0];
+  return /^\d+$/.test(pid) ? pid : null;
+}
+
+// Streams `adb logcat --pid=<pid>`, invoking onLine(text) per line as it
+// arrives. Returns the child process so the caller can `.kill()` it to stop
+// the stream — logcat runs until killed, it never exits on its own.
+function startLogcat(serial, pid, onLine) {
+  const { path: adbPath } = resolveAdbPath();
+  const child = spawn(adbPath, ["-s", serial, "logcat", "--pid", String(pid), "-v", "time"]);
+  let buffer = "";
+  const emit = (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (line) onLine(line);
+    }
+  };
+  child.stdout.on("data", emit);
+  child.stderr.on("data", emit);
+  return child;
+}
+
 async function reboot(serial) {
   await run(["-s", serial, "reboot"]);
 }
@@ -227,6 +263,9 @@ module.exports = {
   listFiles,
   install,
   uninstall,
+  launchApp,
+  getPid,
+  startLogcat,
   reboot,
   getSetting,
   putSetting,

@@ -34,18 +34,36 @@
                 "zip",
                 "dmg"
             ],
-            "identity": null
+            "identity": null,
+            "extraResources": [
+                {
+                    "from": "resources/platform-tools/darwin",
+                    "to": "platform-tools"
+                }
+            ]
         },
         "linux": {
             "target": [
                 "AppImage",
                 "deb"
             ],
-            "maintainer": "Light Phone Manager <noreply@example.com>"
+            "maintainer": "Light Phone Manager <noreply@example.com>",
+            "extraResources": [
+                {
+                    "from": "resources/platform-tools/linux",
+                    "to": "platform-tools"
+                }
+            ]
         },
         "win": {
             "target": [
                 "nsis"
+            ],
+            "extraResources": [
+                {
+                    "from": "resources/platform-tools/win32",
+                    "to": "platform-tools"
+                }
             ]
         }
     },
