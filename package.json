@@ -12,9 +12,9 @@
         "fetch-platform-tools": "node scripts/fetch-platform-tools.js",
         "predist": "node scripts/fetch-platform-tools.js",
         "dist": "electron-builder",
-        "dist:win": "electron-builder --win",
-        "dist:mac": "electron-builder --mac",
-        "dist:linux": "electron-builder --linux"
+        "dist:win": "node scripts/fetch-platform-tools.js && electron-builder --win",
+        "dist:mac": "node scripts/fetch-platform-tools.js && electron-builder --mac",
+        "dist:linux": "node scripts/fetch-platform-tools.js && electron-builder --linux"
     },
     "build": {
         "appId": "com.lightphonemanager.app",
