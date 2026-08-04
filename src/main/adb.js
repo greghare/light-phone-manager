@@ -249,6 +249,46 @@ async function putSetting(serial, namespace, key, value) {
   await run(["-s", serial, "shell", "settings", "put", namespace, key, String(value)]);
 }
 
+// Lists packages installed for the current user (system + third-party). A
+// package that's been hidden via setPackageHidden won't appear here even
+// though it still physically exists on the device.
+async function listAllPackages(serial) {
+  const { stdout } = await run(["-s", serial, "shell", "pm", "list", "packages"]);
+  return stdout
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("package:"))
+    .map((l) => l.slice("package:".length).trim())
+    .filter(Boolean);
+}
+
+// Same as listAllPackages but with `-u`, which also includes packages
+// that have been uninstalled for the current user — needed to find a
+// package by name even while it's currently hidden.
+async function listAllPackagesIncludingHidden(serial) {
+  const { stdout } = await run(["-s", serial, "shell", "pm", "list", "packages", "-u"]);
+  return stdout
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("package:"))
+    .map((l) => l.slice("package:".length).trim())
+    .filter(Boolean);
+}
+
+// Removes/restores a package for the current user only. Unlike
+// `pm disable-user`, an uninstalled-for-user package doesn't show up in the
+// app list at all (not even as "disabled" in device Settings > Apps) — but
+// since `-k` keeps its APK and data on the underlying system image, it can
+// always be restored with `cmd package install-existing`, no reinstall/APK
+// needed. No root required; works the same as common Android debloating.
+async function setPackageHidden(serial, packageId, hidden) {
+  if (hidden) {
+    await run(["-s", serial, "shell", "pm", "uninstall", "-k", "--user", "0", packageId]);
+  } else {
+    await run(["-s", serial, "shell", "cmd", "package", "install-existing", packageId]);
+  }
+}
+
 module.exports = {
   listDevices,
   getDeviceInfo,
@@ -269,4 +309,7 @@ module.exports = {
   reboot,
   getSetting,
   putSetting,
+  listAllPackages,
+  listAllPackagesIncludingHidden,
+  setPackageHidden,
 };

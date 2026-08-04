@@ -94,8 +94,8 @@ const state = {
   confirmDialog: null, // { message, confirmLabel, danger }
   contextMenu: null, // { x, y, repoId }
   appLogs: null, // { repoId, lines: string[], loading, error }
-  osSettings: { animationsOn: null, showExternalTools: null }, // null = unknown (no device connected yet)
-  osSettingsBusy: {}, // { animations?: bool, showExternalTools?: bool }
+  osSettings: { animationsOn: null, showExternalTools: null, chromiumAvailable: null, chromiumHidden: null }, // null = unknown (no device connected yet)
+  osSettingsBusy: {}, // { animations?: bool, showExternalTools?: bool, chromium?: bool }
   osSettingsBaseline: null, // { animationsOn, showExternalTools } as first observed this device connection — the value LightOS is actually running with until a reboot
   ringtones: { ringtones: [], alerts: [] },
   ringtonesLoading: false,
@@ -734,6 +734,18 @@ function renderSettingsView() {
         busy: busy.showExternalTools,
       })}
       ${
+        !notConnected && os.chromiumAvailable === false
+          ? ""
+          : renderToggleRow({
+              title: "Hide Chromium Browser",
+              description: "Completely removes the Chromium browser app from the Light Phone's app list. Its data isn't lost — turn this off to restore it.",
+              checked: os.chromiumHidden,
+              action: "toggleChromiumHidden",
+              disabled: notConnected || busy.chromium || os.chromiumAvailable === false,
+              busy: busy.chromium,
+            })
+      }
+      ${
         needsReboot
           ? `<div style="padding-top:22px">
               <button data-action="rebootDevice" ${state.deviceRebooting ? "disabled" : ""} style="background:transparent;border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:14px;font-weight:600;padding:9px 18px;border-radius:8px;cursor:${state.deviceRebooting ? "default" : "pointer"}">${state.deviceRebooting ? "Rebooting…" : "Reboot Light Phone"}</button>
@@ -1099,6 +1111,19 @@ const actions = {
       showToast(err.message || "Couldn't change that setting");
     } finally {
       setState({ osSettingsBusy: { ...state.osSettingsBusy, showExternalTools: false } });
+    }
+  },
+  async toggleChromiumHidden() {
+    if (state.device.status !== "connected" || state.osSettingsBusy.chromium || state.osSettings.chromiumAvailable === false) return;
+    const next = !state.osSettings.chromiumHidden;
+    setState({ osSettingsBusy: { ...state.osSettingsBusy, chromium: true } });
+    try {
+      const os = await window.api.osSettingsSetChromiumHidden(next);
+      setState({ osSettings: os });
+    } catch (err) {
+      showToast(err.message || "Couldn't change that setting");
+    } finally {
+      setState({ osSettingsBusy: { ...state.osSettingsBusy, chromium: false } });
     }
   },
   selectNav(ds) {

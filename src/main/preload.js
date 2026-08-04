@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld("api", {
   osSettingsGet: () => ipcRenderer.invoke("os-settings:get"),
   osSettingsSetAnimations: (on) => ipcRenderer.invoke("os-settings:setAnimations", on),
   osSettingsSetShowExternalTools: (on) => ipcRenderer.invoke("os-settings:setShowExternalTools", on),
+  osSettingsSetChromiumHidden: (hidden) => ipcRenderer.invoke("os-settings:setChromiumHidden", hidden),
 
   installStart: (repoId, version) => ipcRenderer.invoke("install:start", { repoId, version }),
   installLatest: (repoId) => ipcRenderer.invoke("install:latest", repoId),

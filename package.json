@@ -17,8 +17,13 @@
         "dist:linux": "node scripts/fetch-platform-tools.js && electron-builder --linux"
     },
     "build": {
-        "appId": "com.lightphonemanager.app",
+        "appId": "com.greghare.lightphonemanager",
         "productName": "Light Phone Manager",
+        "publish": {
+            "provider": "github",
+            "owner": "greghare",
+            "repo": "light-phone-manager"
+        },
         "directories": {
             "output": "dist"
         },

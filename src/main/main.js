@@ -25,7 +25,11 @@ let pollTimer = null;
 // connected). null means "unknown" (no device connected yet to read it from).
 const ANIMATION_SCALE_KEYS = ["window_animation_scale", "animator_duration_scale", "transition_animation_scale"];
 const SHOW_EXTERNAL_TOOLS_KEY = "LIGHTOS_SHOW_EXTERNAL_TOOLS";
-let osSettings = { animationsOn: null, showExternalTools: null };
+let osSettings = { animationsOn: null, showExternalTools: null, chromiumAvailable: null, chromiumHidden: null };
+// The Chromium package name isn't fixed across LightOS builds, so it's
+// resolved by searching installed packages the first time a device connects
+// (see refreshOsSettings) and cached here rather than re-searched every poll.
+let chromiumPackageId = null;
 
 function newId(prefix) {
   return `${prefix}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
@@ -113,20 +117,31 @@ async function pollDevice(force = false) {
 }
 
 function resetOsSettings() {
-  if (osSettings.animationsOn !== null || osSettings.showExternalTools !== null) {
-    osSettings = { animationsOn: null, showExternalTools: null };
+  chromiumPackageId = null;
+  const empty = { animationsOn: null, showExternalTools: null, chromiumAvailable: null, chromiumHidden: null };
+  if (JSON.stringify(osSettings) !== JSON.stringify(empty)) {
+    osSettings = empty;
     send("os-settings:update", osSettings);
   }
 }
 
 async function refreshOsSettings(serial) {
-  const [scaleRaw, showExternalRaw] = await Promise.all([
+  if (chromiumPackageId === null) {
+    // -u so it's found even if a previous session already hid it.
+    const packages = await adb.listAllPackagesIncludingHidden(serial);
+    chromiumPackageId = packages.find((p) => /chromium/i.test(p)) || false;
+  }
+
+  const [scaleRaw, showExternalRaw, visiblePackages] = await Promise.all([
     adb.getSetting(serial, "global", ANIMATION_SCALE_KEYS[0]),
     adb.getSetting(serial, "system", SHOW_EXTERNAL_TOOLS_KEY),
+    chromiumPackageId ? adb.listAllPackages(serial) : Promise.resolve([]),
   ]);
   const next = {
     animationsOn: scaleRaw != null && parseFloat(scaleRaw) > 0,
     showExternalTools: showExternalRaw === "1",
+    chromiumAvailable: !!chromiumPackageId,
+    chromiumHidden: chromiumPackageId ? !visiblePackages.includes(chromiumPackageId) : null,
   };
   if (JSON.stringify(next) !== JSON.stringify(osSettings)) {
     osSettings = next;
@@ -572,6 +587,16 @@ function registerIpc() {
     osSettings = { ...osSettings, showExternalTools: on };
     send("os-settings:update", osSettings);
     send("toast", { message: `External tools ${on ? "shown" : "hidden"} in LightOS` });
+    return osSettings;
+  });
+
+  ipcMain.handle("os-settings:setChromiumHidden", async (_evt, hidden) => {
+    const serial = requireConnectedDevice();
+    if (!chromiumPackageId) throw new Error("No Chromium browser found on this device.");
+    await adb.setPackageHidden(serial, chromiumPackageId, hidden);
+    osSettings = { ...osSettings, chromiumHidden: hidden };
+    send("os-settings:update", osSettings);
+    send("toast", { message: `Chromium browser ${hidden ? "hidden" : "restored"}` });
     return osSettings;
   });
 
