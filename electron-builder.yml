@@ -26,6 +26,12 @@ files:
 extraResources:
   - from: resources/README-platform-tools.txt
     to: platform-tools/README.txt
+  - from: resources/README-light-cli.txt
+    to: light-cli/README.txt
+  - from: resources/light-cli/run_light.py
+    to: light-cli/run_light.py
+  - from: resources/light-cli/notes_cli.py
+    to: light-cli/notes_cli.py
 
 win:
   target:
@@ -34,6 +40,8 @@ win:
   extraResources:
     - from: resources/platform-tools/win32
       to: platform-tools
+    - from: resources/light-cli/win32
+      to: light-cli/win32
 
 nsis:
   oneClick: false
@@ -47,6 +55,8 @@ mac:
   extraResources:
     - from: resources/platform-tools/darwin
       to: platform-tools
+    - from: resources/light-cli/darwin
+      to: light-cli/darwin
   hardenedRuntime: true
   gatekeeperAssess: false
 
@@ -58,3 +68,5 @@ linux:
   extraResources:
     - from: resources/platform-tools/linux
       to: platform-tools
+    - from: resources/light-cli/linux
+      to: light-cli/linux

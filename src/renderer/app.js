@@ -31,6 +31,41 @@ function versionsEqual(a, b) {
   return norm(a) === norm(b);
 }
 
+// Releases are listed newest-published-first, but "most recently published"
+// isn't the same as "highest version" — a lower-numbered stable release can
+// go out after a higher-numbered beta (e.g. v1.4.0 published after someone
+// already sideloaded v2.0.0-beta.2). Comparing numerically here, instead of
+// just checking inequality, keeps that from reading as an "update available"
+// (or worse, offering to install it as one and quietly downgrading).
+function parseVersion(v) {
+  const s = String(v).trim().replace(/^v/i, "");
+  const hyphen = s.indexOf("-");
+  const main = hyphen === -1 ? s : s.slice(0, hyphen);
+  const pre = hyphen === -1 ? null : s.slice(hyphen + 1);
+  return { parts: main.split(".").map((p) => parseInt(p, 10) || 0), pre };
+}
+
+function compareVersions(a, b) {
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
+  const len = Math.max(pa.parts.length, pb.parts.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa.parts[i] || 0) - (pb.parts[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  // Equal numeric version: a prerelease (has a "-" suffix) ranks below its
+  // corresponding release, per semver precedence rules.
+  if (pa.pre && !pb.pre) return -1;
+  if (!pa.pre && pb.pre) return 1;
+  if (pa.pre && pb.pre) return pa.pre.localeCompare(pb.pre);
+  return 0;
+}
+
+function isVersionNewer(candidate, base) {
+  if (candidate == null || base == null) return false;
+  return compareVersions(candidate, base) > 0;
+}
+
 // GitHub tags can be named almost anything ("chess-v1.0.0-alpha") and don't
 // have to resemble the tool's actual versionName at all, so tag-stripping
 // alone can't reliably tell "up to date" from "update available". Once we've
@@ -66,7 +101,7 @@ function avatar(r, size) {
 
 const state = {
   device: { status: "none", serial: null, model: null, androidVersion: null, freeBytes: null, totalBytes: null },
-  section: "tools", // "tools" | "media" | "install" | "settings" | "ringtones"
+  section: "tools", // "tools" | "media" | "install" | "settings" | "ringtones" | "podcasts" | "notes" | "about"
   repos: [],
   nav: "repos",
   category: "all",
@@ -102,6 +137,40 @@ const state = {
   ringtoneBusy: {}, // remoteFilename -> bool ("uploading"/"restoring")
   ringtonePlayLoading: {}, // remoteFilename -> bool (pulling the file to play it)
   playingRingtone: null, // remoteFilename currently playing, or null
+
+  podcasts: [], // [{ index, title, publisher }]
+  podcastsLoading: false,
+  podcastBusy: {}, // title -> bool
+  showAddPodcast: false,
+  addPodcastMode: "search", // "search" | "rss"
+  addPodcastUrl: "",
+  addPodcastBusy: false,
+  podcastSearchAvailable: null, // null = not checked yet; set once at boot from podcasts:searchAvailable
+  podcastSearchQuery: "",
+  podcastSearchLoading: false,
+  podcastSearchResults: [], // [{ id, title, author, feedUrl, artwork, description }]
+  podcastSearchError: null,
+  podcastSearchAddBusy: {}, // feedUrl -> bool
+
+  notes: [], // [{ id, title, noteType, updatedAt, preview }]
+  notesLoading: false,
+  selectedNoteId: null, // a real note's id, or NEW_NOTE_ID for an unsaved draft (see actions.addNote)
+  noteDetail: null, // last-saved-state of the open note: { id, title, noteType, updatedAt, content }
+  noteDetailLoading: false,
+  noteEditTitle: "", // live-edited copies bound to the title/content fields —
+  noteEditContent: "", // diffed against noteDetail to tell whether Save has anything to do
+  noteSaving: false,
+  noteBusy: {}, // id -> bool (deleting)
+  noteContextMenu: null, // { x, y, noteId }
+
+  // null fields = not checked yet (status hasn't come back from the CLI).
+  light: { installed: null, loggedIn: null, devices: [], selectedDeviceId: null, error: null },
+  lightEmail: "",
+  lightPassword: "",
+  lightLoginBusy: false,
+  lightLoginError: null,
+  lightDeviceSelectBusy: false,
+  lightLogoutBusy: false,
 };
 
 // One shared <audio> element for previewing ringtones/alerts — reused across
@@ -162,7 +231,7 @@ function deriveList() {
 
 function repoStatus(r) {
   const latest = r.releases && r.releases[0];
-  const updateAvailable = !!r.installedVersion && latest && !versionsEqual(releaseVersion(latest), r.installedVersion);
+  const updateAvailable = !!r.installedVersion && latest && isVersionNewer(releaseVersion(latest), r.installedVersion);
   return { latest, updateAvailable };
 }
 
@@ -252,7 +321,11 @@ function renderSidebar() {
     ${["photos", "screenshots", "zero", "videos"]
       .map((key) => {
         const type = state.mediaTypes.find((t) => t.key === key);
-        const label = type ? type.label : key;
+        // Falls back to a capitalized key before mediaTypes has loaded from
+        // the main process (mediaGetSettings is one of the boot() calls,
+        // not instant) — every one of these labels is just its key
+        // capitalized anyway, so this never visibly changes once it loads.
+        const label = type ? type.label : key.charAt(0).toUpperCase() + key.slice(1);
         const active = state.section === "media" && state.mediaKey === key;
         return `
       <div data-action="selectMedia" data-key="${esc(key)}" style="display:flex;align-items:center;justify-content:space-between;padding:6px 22px;cursor:pointer">
@@ -261,8 +334,17 @@ function renderSidebar() {
       </div>`;
       })
       .join("")}
+    <div data-action="openPodcasts" style="display:flex;align-items:center;justify-content:space-between;padding:6px 22px;cursor:pointer">
+      <span style="font-size:15px;font-weight:700;color:${state.section === "podcasts" ? "#fff" : "rgba(255,255,255,0.55)"};text-decoration:${state.section === "podcasts" ? "underline" : "none"}">Podcasts</span>
+      <span style="font-size:12px;color:rgba(255,255,255,0.3)">${state.podcasts.length}</span>
+    </div>
     <div data-action="openRingtones" style="display:flex;align-items:center;justify-content:space-between;padding:6px 22px;cursor:pointer">
       <span style="font-size:15px;font-weight:700;color:${state.section === "ringtones" ? "#fff" : "rgba(255,255,255,0.55)"};text-decoration:${state.section === "ringtones" ? "underline" : "none"}">Ringtones &amp; Alerts</span>
+    </div>
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:rgba(255,255,255,0.3);padding:0 22px;margin:28px 0 12px">Notes</div>
+    <div data-action="openNotes" style="display:flex;align-items:center;justify-content:space-between;padding:6px 22px;cursor:pointer">
+      <span style="font-size:15px;font-weight:700;color:${state.section === "notes" ? "#fff" : "rgba(255,255,255,0.55)"};text-decoration:${state.section === "notes" ? "underline" : "none"}">Notes</span>
+      <span style="font-size:12px;color:rgba(255,255,255,0.3)">${state.notes.length}</span>
     </div>
 
     <div style="flex:1"></div>
@@ -270,6 +352,9 @@ function renderSidebar() {
       <div data-action="openInstallView" style="font-size:12px;color:rgba(255,255,255,0.4);cursor:pointer;text-decoration:underline;margin-bottom:14px">Install APK file…</div>
       <div data-action="openSettings" style="display:flex;align-items:center;gap:8px;padding-bottom:16px;font-size:15px;font-weight:700;color:${state.section === "settings" ? "#fff" : "rgba(255,255,255,0.55)"};cursor:pointer">
         ${gearIcon()} Settings
+      </div>
+      <div data-action="openAbout" style="display:flex;align-items:center;gap:8px;padding-bottom:16px;font-size:15px;font-weight:700;color:${state.section === "about" ? "#fff" : "rgba(255,255,255,0.55)"};cursor:pointer">
+        ${infoIcon()} About
       </div>
     </div>
   </div>`;
@@ -279,6 +364,14 @@ function gearIcon() {
   return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
     <circle cx="12" cy="12" r="3"></circle>
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+  </svg>`;
+}
+
+function infoIcon() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <circle cx="12" cy="12" r="10"></circle>
+    <line x1="12" y1="16" x2="12" y2="11.5"></line>
+    <line x1="12" y1="8" x2="12.01" y2="8"></line>
   </svg>`;
 }
 
@@ -446,6 +539,158 @@ function renderDetail() {
   </div>`;
 }
 
+/* ---------- notes ---------- */
+
+// "Just now" within 5 minutes (matches how fresh an edit still feels),
+// otherwise a plain date — same two-tier scheme the screenshot this was
+// built from uses.
+function formatNoteDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const diffMs = Date.now() - d.getTime();
+  if (diffMs >= 0 && diffMs < 5 * 60 * 1000) return "Just now";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function sortNotesByUpdated(a, b) {
+  return a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0;
+}
+
+// Sentinel selectedNoteId for a note that only exists in the renderer so
+// far — "+" opens one of these instead of calling notesCreate immediately,
+// so a note doesn't get created on the account until Save is actually
+// clicked (and never, if the user just navigates away from an empty draft).
+const NEW_NOTE_ID = "__new__";
+
+function noteIsDirty() {
+  const n = state.noteDetail;
+  if (!n) return false;
+  if (n.id === NEW_NOTE_ID) return true;
+  const title = state.noteEditTitle.trim() || "Untitled";
+  return title !== n.title || state.noteEditContent !== (n.content || "");
+}
+
+function renderNoteRow(n) {
+  const title = n.title && n.title.trim() ? n.title : "Untitled";
+  const rowBg = n.id === state.selectedNoteId ? "rgba(255,255,255,0.08)" : "transparent";
+  const subtitle = n.noteType === "audio" ? "(audio note)" : n.preview || "";
+  return `
+  <div data-action="selectNote" data-context-note="${esc(n.id)}" data-id="${esc(n.id)}" style="display:flex;align-items:center;gap:12px;padding:11px 14px;margin:0 10px 2px;border-radius:12px;cursor:pointer;background:${rowBg}">
+    ${avatar({ name: title }, 36)}
+    <div style="flex:1;min-width:0">
+      <div style="font-size:15px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(title)}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px">${esc(subtitle)}</div>
+    </div>
+    <div style="font-size:11px;color:rgba(255,255,255,0.3);flex-shrink:0;white-space:nowrap;align-self:flex-start;margin-top:2px">${esc(formatNoteDate(n.updatedAt))}</div>
+  </div>`;
+}
+
+function renderNotesListPane() {
+  const notes = state.notes;
+  return `
+  <div style="width:350px;flex-shrink:0;display:flex;flex-direction:column;overflow-y:auto">
+    <div style="padding:22px 24px 14px;display:flex;align-items:center;gap:8px;flex-shrink:0">
+      <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">Notes</div>
+      <div style="font-size:15px;font-weight:600;color:rgba(255,255,255,0.3)">${notes.length}</div>
+      <div style="flex:1"></div>
+      <button data-action="addNote" title="New note" style="background:#fff;color:#000;border:none;border-radius:8px;width:28px;height:28px;font-size:18px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;flex-shrink:0">+</button>
+    </div>
+    ${
+      state.notesLoading
+        ? `<div style="padding:12px 24px;font-size:13px;color:rgba(255,255,255,0.4)">Loading…</div>`
+        : notes.length === 0
+        ? `<div style="padding:40px 20px;text-align:center;font-size:13px;color:rgba(255,255,255,0.35)">No notes yet</div>`
+        : notes.map(renderNoteRow).join("")
+    }
+  </div>`;
+}
+
+function renderNoteDetailPane() {
+  if (!state.selectedNoteId) {
+    return `
+    <div style="flex:1;overflow-y:auto;position:relative">
+      <div style="height:100%;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.3);font-size:14px">Select a note to view it, or create a new one</div>
+    </div>`;
+  }
+  if (state.noteDetailLoading || !state.noteDetail) {
+    return `
+    <div style="flex:1;overflow-y:auto;position:relative">
+      <div style="height:100%;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.35);font-size:14px">Loading…</div>
+    </div>`;
+  }
+  const n = state.noteDetail;
+  const isNew = n.id === NEW_NOTE_ID;
+  const busy = !!state.noteBusy[n.id];
+  const isAudio = n.noteType === "audio";
+  const dirty = noteIsDirty();
+  const saveDisabled = isAudio || state.noteSaving || !dirty;
+  const dateLine = isNew ? "Not saved yet" : `Last updated ${esc(formatNoteDate(n.updatedAt))}`;
+  return `
+  <div style="flex:1;overflow-y:auto;position:relative">
+    <div style="padding:22px 48px 60px;max-width:640px">
+      <input data-bind="noteEditTitle" data-note-field="title" value="${esc(state.noteEditTitle)}" placeholder="Untitled" ${isAudio ? "disabled" : ""} style="width:100%;background:transparent;border:none;color:#fff;font-size:32px;font-weight:500;letter-spacing:-0.01em;padding:0;margin-bottom:6px;outline:none">
+      <div style="font-size:13px;color:rgba(255,255,255,0.4);margin-bottom:20px">${dateLine}</div>
+      ${
+        isAudio
+          ? `<div style="font-size:13px;color:rgba(255,255,255,0.45);line-height:1.6">This is an audio note — Light Phone Manager can't play or edit audio notes yet.</div>`
+          : `<textarea data-bind="noteEditContent" data-note-field="content" placeholder="Start writing…" style="width:100%;min-height:320px;background:transparent;border:none;color:rgba(255,255,255,0.85);font-size:15px;line-height:1.6;padding:0;outline:none;resize:vertical;font-family:inherit">${esc(state.noteEditContent)}</textarea>`
+      }
+      <div style="display:flex;align-items:center;gap:16px;margin-top:32px">
+        <button data-action="saveNote" ${saveDisabled ? "disabled" : ""} style="background:${saveDisabled ? "rgba(255,255,255,0.1)" : "#fff"};color:${saveDisabled ? "rgba(255,255,255,0.4)" : "#000"};border:none;border-radius:8px;padding:9px 20px;font-size:13px;font-weight:600;cursor:${saveDisabled ? "default" : "pointer"}">${state.noteSaving ? "Saving…" : "Save"}</button>
+        ${
+          isNew
+            ? ""
+            : busy
+            ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.05em;color:rgba(255,255,255,0.3)">DELETING…</div>`
+            : `<div data-action="deleteNote" data-id="${esc(n.id)}" style="font-size:11px;font-weight:700;letter-spacing:0.05em;color:rgba(255,120,110,0.85);cursor:pointer;display:inline-block">DELETE NOTE</div>`
+        }
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderNotesView() {
+  const light = state.light;
+  let gateMessage = null;
+  let gateColor = "rgba(255,255,255,0.45)";
+  if (light.installed === false) {
+    gateMessage = "The bundled Light CLI is missing or broken. Try reinstalling Light Phone Manager.";
+    gateColor = "#f5a623";
+  } else if (light.loggedIn === null) {
+    gateMessage = "Checking your Light Account…";
+  } else if (!light.loggedIn) {
+    gateMessage = `Sign in to your Light Account in <span data-action="openSettings" style="color:#fff;cursor:pointer;text-decoration:underline">Settings</span> to manage notes.`;
+  } else if (light.devices.length > 1 && !light.selectedDeviceId) {
+    gateMessage = `Multiple Light devices found on this account — choose one in <span data-action="openSettings" style="color:#fff;cursor:pointer;text-decoration:underline">Settings</span> before managing notes.`;
+    gateColor = "#f5a623";
+  }
+
+  if (gateMessage) {
+    return `
+    <div style="flex:1;overflow-y:auto">
+      <div style="padding:22px 24px 8px"><div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">Notes</div></div>
+      <div style="padding:8px 24px 60px;max-width:760px"><div style="font-size:13px;color:${gateColor};line-height:1.6">${gateMessage}</div></div>
+    </div>`;
+  }
+
+  return `${renderNotesListPane()}${renderNoteDetailPane()}`;
+}
+
+function renderNoteContextMenu() {
+  const m = state.noteContextMenu;
+  if (!m) return "";
+  const note = state.notes.find((n) => n.id === m.noteId);
+  if (!note) return "";
+  const itemStyle = `padding:9px 12px;border-radius:7px;font-size:13px;font-weight:600;color:#ff7a6e;cursor:pointer`;
+  const hoverAttrs = `onmouseover="this.style.background='rgba(255,255,255,0.08)'" onmouseout="this.style.background='transparent'"`;
+  return `
+  <div data-action="closeNoteContextMenu" style="position:fixed;inset:0;z-index:50"></div>
+  <div style="position:fixed;left:${m.x}px;top:${m.y}px;z-index:51;min-width:170px;background:#181818;border:1px solid rgba(255,255,255,0.1);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,0.55);padding:6px;">
+    <div data-action="deleteNote" data-id="${esc(note.id)}" style="${itemStyle}" ${hoverAttrs}>Delete Note</div>
+  </div>`;
+}
+
 function currentMediaType() {
   return state.mediaTypes.find((t) => t.key === state.mediaKey) || { key: state.mediaKey, label: "Media", kind: "image" };
 }
@@ -573,6 +818,20 @@ function renderLightbox() {
 // in the DOM to patch, or the current item is a video — a playing <video>
 // needs a fresh element (new src, restart playback) rather than an in-place
 // swap, so that case just re-renders normally.
+// Mirrors the disabled/style logic in renderNoteDetailPane's Save button —
+// kept in sync manually since this exists specifically to update that
+// button without going through render() (see the `input` listener).
+function patchNoteSaveButton() {
+  const btn = document.querySelector('[data-action="saveNote"]');
+  if (!btn || !state.noteDetail) return false;
+  const disabled = state.noteDetail.noteType === "audio" || state.noteSaving || !noteIsDirty();
+  btn.disabled = disabled;
+  btn.style.background = disabled ? "rgba(255,255,255,0.1)" : "#fff";
+  btn.style.color = disabled ? "rgba(255,255,255,0.4)" : "#000";
+  btn.style.cursor = disabled ? "default" : "pointer";
+  return true;
+}
+
 function patchLightboxImage() {
   if (currentMediaType().kind === "video") return false;
   const overlay = document.querySelector("[data-lightbox]");
@@ -753,6 +1012,134 @@ function renderSettingsView() {
             </div>`
           : ""
       }
+      ${renderLightAccountSection()}
+    </div>
+  </div>`;
+}
+
+function renderLightAccountSection() {
+  const light = state.light;
+  let body;
+
+  if (light.installed === false) {
+    body = `<div style="font-size:13px;color:#f5a623;line-height:1.6">The bundled Light CLI is missing or broken. Try reinstalling Light Phone Manager.</div>`;
+  } else if (light.loggedIn === null) {
+    body = `<div style="font-size:13px;color:rgba(255,255,255,0.4)">Checking…</div>`;
+  } else if (!light.loggedIn) {
+    // autocomplete hints tell the OS/password manager these are real login
+    // fields (so it can offer to fill/save them the same as any other app);
+    // the password value itself never leaves this form except in the single
+    // ipcRenderer.invoke call submitLightLogin makes, and is cleared from
+    // state right after.
+    body = `
+    <div style="max-width:360px">
+      <div style="font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase;margin-bottom:6px">Email</div>
+      <input data-bind="lightEmail" data-action="submitOnEnter" type="email" autocomplete="username" value="${esc(state.lightEmail)}" ${state.lightLoginBusy ? "disabled" : ""} style="width:100%;background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,0.2);color:#fff;font-size:15px;padding:6px 0;outline:none;margin-bottom:16px">
+      <div style="font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase;margin-bottom:6px">Password</div>
+      <input data-bind="lightPassword" data-action="submitOnEnter" type="password" autocomplete="current-password" value="${esc(state.lightPassword)}" ${state.lightLoginBusy ? "disabled" : ""} style="width:100%;background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,0.2);color:#fff;font-size:15px;padding:6px 0;outline:none;margin-bottom:18px">
+      ${state.lightLoginError ? `<div style="font-size:12px;color:#f5a623;margin-bottom:12px">${esc(state.lightLoginError)}</div>` : ""}
+      <button data-action="submitLightLogin" ${state.lightLoginBusy ? "disabled" : ""} style="background:#fff;color:#000;border:none;border-radius:8px;padding:9px 18px;font-size:14px;font-weight:600;cursor:${state.lightLoginBusy ? "default" : "pointer"}">${state.lightLoginBusy ? "Signing in…" : "Sign In"}</button>
+      <div style="font-size:12px;color:rgba(255,255,255,0.35);margin-top:12px;line-height:1.5">Your password is sent straight to the Light CLI to sign in and is never stored by this tool. The CLI keeps you signed in on its own for about 30 days.</div>
+    </div>`;
+  } else {
+    // light.devices is already filtered to TLP301 (Light Phone 3) and
+    // auto-selected when there's only one — see onlyTlp301/autoSelectDeviceId
+    // in main.js. This only needs to render a picker at all once that still
+    // leaves more than one candidate.
+    const multiDevice = light.devices.length > 1;
+    const selected = light.devices.find((d) => d.deviceId === light.selectedDeviceId);
+    body = `
+    <div style="max-width:420px">
+      <div style="font-size:14px;color:#fff;margin-bottom:4px">Signed in${selected ? ` · ${esc(selected.phoneNumber || selected.serialNumber || "")}` : ""}</div>
+      ${
+        multiDevice
+          ? `<div style="margin:14px 0">
+              <div style="font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase;margin-bottom:6px">Device</div>
+              <select data-action="selectLightDevice" ${state.lightDeviceSelectBusy ? "disabled" : ""} style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.2);color:#fff;font-size:14px;padding:8px 10px;border-radius:8px;outline:none">
+                <option value="" ${!light.selectedDeviceId ? "selected" : ""} disabled>Choose a device…</option>
+                ${light.devices
+                  .map(
+                    (d) =>
+                      `<option value="${esc(d.deviceId)}" ${d.deviceId === light.selectedDeviceId ? "selected" : ""}>${esc(d.phoneNumber || d.serialNumber || d.deviceId)}${d.sku ? ` · ${esc(d.sku)}` : ""}</option>`
+                  )
+                  .join("")}
+              </select>
+            </div>`
+          : ""
+      }
+      <button data-action="lightLogout" ${state.lightLogoutBusy ? "disabled" : ""} style="background:transparent;border:1px solid rgba(255,255,255,0.3);color:#fff;font-size:14px;font-weight:600;padding:9px 18px;border-radius:8px;cursor:${state.lightLogoutBusy ? "default" : "pointer"};margin-top:6px">${state.lightLogoutBusy ? "Signing out…" : "Log Out"}</button>
+    </div>`;
+  }
+
+  return `
+  <div style="margin-top:36px;padding-top:28px;border-top:1px solid rgba(255,255,255,0.08)">
+    <div style="font-size:20px;font-weight:700;color:#fff;margin-bottom:16px">Light Account</div>
+    ${body}
+  </div>`;
+}
+
+function attributionRow({ name, note, url }) {
+  return `
+  <div style="padding:16px 0;border-bottom:1px solid rgba(255,255,255,0.08)">
+    <div style="font-size:15px;font-weight:700;color:#fff">${esc(name)}</div>
+    <div style="font-size:13px;color:rgba(255,255,255,0.45);line-height:1.5;margin-top:4px">${note}</div>
+    ${
+      url
+        ? `<div style="font-size:13px;margin-top:4px"><span data-action="openRepoUrl" data-url="${esc(url)}" style="color:rgba(255,255,255,0.6);cursor:pointer;text-decoration:underline">${esc(url)}</span></div>`
+        : ""
+    }
+  </div>`;
+}
+
+function renderAboutView() {
+  const attributions = [
+    {
+      name: "@ffmpeg-installer/ffmpeg",
+      note: "Bundles FFmpeg, used to convert uploaded audio files into the .m4a format Light Phone ringtones/alerts expect.",
+      url: "https://github.com/kribblo/node-ffmpeg-installer",
+    },
+    {
+      name: "app-info-parser",
+      note: "Reads app name, package id, version, and icon out of an .apk file when tracking or installing a tool.",
+      url: "https://github.com/rufengsuixing/app-info-parser",
+    },
+    {
+      name: "Android Platform Tools (adb)",
+      note: "Bundled to talk to your Light Phone 3 over USB — installing tools, backing up media, and everything else that goes over adb.",
+      url: "https://developer.android.com/tools/releases/platform-tools",
+    },
+    {
+      name: "Electron",
+      note: "The application shell this tool is built on.",
+      url: "https://www.electronjs.org",
+    },
+    {
+      name: "Inter",
+      note: "The typeface used throughout this tool, by The Inter Project Authors. Licensed under the SIL Open Font License.",
+      url: "https://github.com/rsms/inter",
+    },
+    {
+      name: "Podcast Index",
+      note: "Podcast search results on the Add Podcast screen are powered by the Podcast Index API. This product uses the Podcast Index but is not affiliated with or endorsed by Podcast Index. The API's terms are available at their site.",
+      url: "https://podcastindex.org",
+    },
+  ];
+
+  return `
+  <div style="flex:1;overflow-y:auto">
+    <div style="padding:22px 24px 8px">
+      <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">About</div>
+    </div>
+    <div style="padding:8px 24px 60px;max-width:640px">
+      <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:20px 22px;margin-bottom:8px">
+        <div style="font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase;margin-bottom:8px">Special thanks</div>
+        <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:6px">Alexis Garado</div>
+        <div style="font-size:13px;color:rgba(255,255,255,0.55);line-height:1.6;margin-bottom:8px">Author of the Light API/CLI/TUI, the unofficial toolkit this tool relies on for all Podcast, Music, Note, and official Light tool management on your Light Account.</div>
+        <div style="font-size:13px"><span data-action="openRepoUrl" data-url="https://github.com/garado/light" style="color:#fff;cursor:pointer;text-decoration:underline">github.com/garado/light</span></div>
+      </div>
+
+      <div style="font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase;margin:28px 0 4px">Also built with</div>
+      <div>${attributions.map(attributionRow).join("")}</div>
     </div>
   </div>`;
 }
@@ -852,7 +1239,7 @@ function renderRingtonesView() {
   const notConnected = state.device.status !== "connected";
   const { ringtones, alerts } = state.ringtones;
   return `
-  <div style="flex:1;overflow-y:auto">
+  <div data-scroll-key="ringtones" style="flex:1;overflow-y:auto">
     <div style="padding:22px 24px 8px">
       <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">Ringtones &amp; Alerts</div>
     </div>
@@ -864,6 +1251,139 @@ function renderRingtonesView() {
           ? `<div style="font-size:13px;color:rgba(255,255,255,0.4);padding:8px 0">Loading…</div>`
           : `${renderRingtoneTable(null, ringtones)}${renderRingtoneTable("Messages", alerts)}`
       }
+    </div>
+  </div>`;
+}
+
+function deleteIcon() {
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>`;
+}
+
+function renderPodcastRow(p) {
+  const busy = state.podcastBusy[p.title];
+  return `
+  <tr style="border-bottom:1px solid rgba(255,255,255,0.06)">
+    <td style="padding:10px 14px 10px 0;font-size:14px;font-weight:600;color:#fff">${esc(p.title)}</td>
+    <td style="padding:10px 14px;font-size:13px;color:rgba(255,255,255,0.5)">${p.publisher ? esc(p.publisher) : "—"}</td>
+    <td style="padding:10px 0;text-align:right;white-space:nowrap">
+      ${
+        busy
+          ? iconSlot({ spinner: true })
+          : iconSlot({ icon: deleteIcon(), title: `Remove ${p.title}`, action: "deletePodcast", dataset: { title: p.title } })
+      }
+    </td>
+  </tr>`;
+}
+
+function renderPodcastsView() {
+  const light = state.light;
+  const addBtn = `<button data-action="openAddPodcast" title="Add podcast" style="background:#fff;color:#000;border:none;border-radius:8px;width:28px;height:28px;font-size:18px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;flex-shrink:0">+</button>`;
+
+  let body;
+  if (light.installed === false) {
+    body = `<div style="font-size:13px;color:#f5a623;padding:8px 0;line-height:1.6">The bundled Light CLI is missing or broken. Try reinstalling Light Phone Manager.</div>`;
+  } else if (light.loggedIn === null) {
+    body = `<div style="font-size:13px;color:rgba(255,255,255,0.4);padding:8px 0">Checking your Light Account…</div>`;
+  } else if (!light.loggedIn) {
+    body = `<div style="font-size:13px;color:rgba(255,255,255,0.45);padding:8px 0;line-height:1.6">Sign in to your Light Account in <span data-action="openSettings" style="color:#fff;cursor:pointer;text-decoration:underline">Settings</span> to manage podcasts.</div>`;
+  } else if (light.devices.length > 1 && !light.selectedDeviceId) {
+    body = `<div style="font-size:13px;color:#f5a623;padding:8px 0;line-height:1.6">Multiple Light devices found on this account — choose one in <span data-action="openSettings" style="color:#fff;cursor:pointer;text-decoration:underline">Settings</span> before managing podcasts.</div>`;
+  } else if (state.podcastsLoading) {
+    body = `<div style="font-size:13px;color:rgba(255,255,255,0.4);padding:8px 0">Loading…</div>`;
+  } else if (state.podcasts.length === 0) {
+    body = `<div style="font-size:13px;color:rgba(255,255,255,0.35);padding:8px 0">No podcasts followed yet.</div>`;
+  } else {
+    body = `
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.15)">
+          <th style="text-align:left;padding:0 14px 8px 0;font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase">Title</th>
+          <th style="text-align:left;padding:0 14px 8px;font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase">Publisher</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>${state.podcasts.map(renderPodcastRow).join("")}</tbody>
+    </table>`;
+  }
+
+  return `
+  <div style="flex:1;overflow-y:auto">
+    <div style="padding:22px 24px 8px;display:flex;align-items:center;gap:14px">
+      <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">Podcasts</div>
+      ${light.loggedIn && (light.devices.length <= 1 || light.selectedDeviceId) ? addBtn : ""}
+    </div>
+    <div style="padding:8px 24px 60px;max-width:760px">${body}</div>
+  </div>`;
+}
+
+function addPodcastTabButton(mode, label) {
+  const active = state.addPodcastMode === mode;
+  return `<button data-action="setAddPodcastMode" data-mode="${mode}" style="flex:1;background:${active ? "#fff" : "transparent"};color:${active ? "#000" : "rgba(255,255,255,0.55)"};border:1px solid ${active ? "#fff" : "rgba(255,255,255,0.2)"};border-radius:7px;padding:8px 0;font-size:13px;font-weight:700;cursor:pointer">${label}</button>`;
+}
+
+function renderPodcastSearchResultRow(r) {
+  const busy = state.podcastSearchAddBusy[r.feedUrl];
+  const alreadyAdded = state.podcasts.some((p) => p.title.toLowerCase() === r.title.toLowerCase());
+  const addLabel = busy ? "Adding…" : alreadyAdded ? "Added" : "Add";
+  return `
+  <div style="display:flex;align-items:center;gap:12px;padding:8px 4px">
+    ${
+      r.artwork
+        ? `<img src="${esc(r.artwork)}" style="width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0;border:1px solid rgba(255,255,255,0.1)">`
+        : `<div style="width:44px;height:44px;border-radius:8px;background:rgba(255,255,255,0.06);flex-shrink:0"></div>`
+    }
+    <div style="min-width:0;flex:1">
+      <div style="font-size:14px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.title)}</div>
+      ${r.author ? `<div style="font-size:12px;color:rgba(255,255,255,0.45);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.author)}</div>` : ""}
+    </div>
+    <button data-action="addSearchedPodcast" data-feed-url="${esc(r.feedUrl)}" data-title="${esc(r.title)}" ${busy || alreadyAdded ? "disabled" : ""} style="flex-shrink:0;background:${alreadyAdded ? "transparent" : "#fff"};color:${alreadyAdded ? "rgba(255,255,255,0.35)" : "#000"};border:${alreadyAdded ? "1px solid rgba(255,255,255,0.2)" : "none"};border-radius:7px;padding:6px 14px;font-size:12px;font-weight:700;cursor:${busy || alreadyAdded ? "default" : "pointer"}">${addLabel}</button>
+  </div>`;
+}
+
+function renderPodcastSearchTab() {
+  if (state.podcastSearchAvailable === false) {
+    return `<div style="font-size:13px;color:rgba(255,255,255,0.45);line-height:1.6;padding:4px 0 2px">Podcast search isn't set up for this build. Use the RSS Feed tab to add a podcast by its feed URL instead.</div>`;
+  }
+  let resultsBody;
+  if (state.podcastSearchError) {
+    resultsBody = `<div style="font-size:13px;color:#f5a623;padding:10px 4px">${esc(state.podcastSearchError)}</div>`;
+  } else if (state.podcastSearchLoading) {
+    resultsBody = `<div style="font-size:13px;color:rgba(255,255,255,0.4);padding:10px 4px">Searching…</div>`;
+  } else if (state.podcastSearchResults.length > 0) {
+    resultsBody = state.podcastSearchResults.map(renderPodcastSearchResultRow).join("");
+  } else if (state.podcastSearchQuery.trim()) {
+    resultsBody = `<div style="font-size:13px;color:rgba(255,255,255,0.35);padding:10px 4px">No podcasts found.</div>`;
+  } else {
+    resultsBody = "";
+  }
+  return `
+  <div style="display:flex;gap:8px;margin-bottom:4px">
+    <input data-bind="podcastSearchQuery" data-action="submitOnEnter" value="${esc(state.podcastSearchQuery)}" placeholder="Search podcasts…" autofocus style="flex:1;background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,0.2);color:#fff;font-size:15px;padding:6px 0;outline:none">
+    <button data-action="searchPodcasts" ${state.podcastSearchLoading ? "disabled" : ""} style="flex-shrink:0;background:#fff;color:#000;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer">Search</button>
+  </div>
+  <div style="max-height:340px;overflow-y:auto">${resultsBody}</div>`;
+}
+
+function renderPodcastRssTab() {
+  return `
+  <div style="font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase;margin-bottom:6px">Podcast RSS feed URL</div>
+  <input data-bind="addPodcastUrl" data-action="submitOnEnter" value="${esc(state.addPodcastUrl)}" placeholder="https://feeds.example.com/podcast.rss" ${state.addPodcastBusy ? "disabled" : ""} style="width:100%;background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,0.2);color:#fff;font-size:15px;padding:6px 0;outline:none">
+  <div style="display:flex;justify-content:flex-end;margin-top:16px">
+    <button data-action="submitAddPodcast" ${state.addPodcastBusy ? "disabled" : ""} style="background:#fff;color:#000;border:none;border-radius:7px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer">${state.addPodcastBusy ? "Adding…" : "Add"}</button>
+  </div>`;
+}
+
+function renderAddPodcastModal() {
+  if (!state.showAddPodcast) return "";
+  return `
+  <div style="position:absolute;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:10">
+    <div style="width:460px;background:#0a0a0a;border-radius:18px;padding:26px;box-shadow:0 30px 80px rgba(0,0,0,0.6)">
+      <div style="font-size:20px;font-weight:500;color:#fff;margin-bottom:18px">Add Podcast</div>
+      <div style="display:flex;gap:8px;margin-bottom:20px">${addPodcastTabButton("search", "Search")}${addPodcastTabButton("rss", "RSS Feed")}</div>
+      ${state.addPodcastMode === "search" ? renderPodcastSearchTab() : renderPodcastRssTab()}
+      <div style="display:flex;justify-content:flex-end;margin-top:18px">
+        <button data-action="closeAddPodcast" style="background:transparent;border:none;color:rgba(255,255,255,0.5);font-size:13px;font-weight:600;padding:8px 14px;cursor:pointer">Close</button>
+      </div>
     </div>
   </div>`;
 }
@@ -985,8 +1505,18 @@ function renderToast() {
   return `<div style="position:absolute;bottom:24px;left:50%;transform:translateX(-50%);background:#0a0a0a;color:#fff;font-size:13px;font-weight:600;padding:10px 18px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.55);z-index:20">${esc(state.toast)}</div>`;
 }
 
+// Scroll positions of elements tagged with [data-scroll-key], keyed by that
+// attribute's value. render() replaces app.innerHTML wholesale on every
+// setState, which would otherwise snap any scrolled view (e.g. the ringtones
+// list) back to the top whenever something unrelated changes (like starting
+// a sound preview). Saved before the DOM is torn down, restored after.
+const scrollPositions = {};
+
 function render() {
   const app = document.getElementById("app");
+  app.querySelectorAll("[data-scroll-key]").forEach((el) => {
+    scrollPositions[el.getAttribute("data-scroll-key")] = el.scrollTop;
+  });
   app.innerHTML = `
     ${renderTopBar()}
     <div style="flex:1;display:flex;min-height:0;position:relative">
@@ -1000,18 +1530,30 @@ function render() {
           ? renderSettingsView()
           : state.section === "ringtones"
           ? renderRingtonesView()
+          : state.section === "podcasts"
+          ? renderPodcastsView()
+          : state.section === "notes"
+          ? renderNotesView()
+          : state.section === "about"
+          ? renderAboutView()
           : `${renderList()}${renderDetail()}`
       }
       ${renderAddRepoModal()}
+      ${renderAddPodcastModal()}
       ${renderDropModal()}
       ${renderConfirmModal()}
       ${renderContextMenu()}
+      ${renderNoteContextMenu()}
       ${renderAppLogsModal()}
       ${renderToast()}
     </div>
   `;
   wireVideoDurations();
   wireInstallDropZone();
+  app.querySelectorAll("[data-scroll-key]").forEach((el) => {
+    const key = el.getAttribute("data-scroll-key");
+    if (key in scrollPositions) el.scrollTop = scrollPositions[key];
+  });
   const logsBox = app.querySelector('[data-role="appLogsBox"]');
   if (logsBox) logsBox.scrollTop = logsBox.scrollHeight;
 }
@@ -1037,10 +1579,243 @@ const actions = {
   },
   openSettings() {
     setState({ section: "settings" });
+    // state.osSettings may still hold whatever was cached at boot/connect
+    // time — see the os-settings:refresh handler in main.js for why that can
+    // be stale on the very first visit — so pull a current read each time
+    // this screen is opened rather than trusting it's still accurate.
+    if (state.device.status === "connected") {
+      window.api.osSettingsRefresh().then(applyOsSettings).catch(() => {});
+    }
+  },
+  openAbout() {
+    setState({ section: "about" });
   },
   openRingtones() {
     setState({ section: "ringtones" });
     refreshRingtones();
+  },
+  openPodcasts() {
+    setState({ section: "podcasts" });
+    refreshPodcasts();
+  },
+  openAddPodcast() {
+    setState({
+      showAddPodcast: true,
+      addPodcastMode: state.podcastSearchAvailable === false ? "rss" : "search",
+      addPodcastUrl: "",
+      podcastSearchQuery: "",
+      podcastSearchResults: [],
+      podcastSearchError: null,
+    });
+  },
+  closeAddPodcast() {
+    setState({ showAddPodcast: false });
+  },
+  setAddPodcastMode(ds) {
+    if (state.addPodcastMode === ds.mode) return;
+    setState({ addPodcastMode: ds.mode });
+  },
+  async searchPodcasts() {
+    const term = state.podcastSearchQuery.trim();
+    if (!term || state.podcastSearchLoading) return;
+    setState({ podcastSearchLoading: true, podcastSearchError: null });
+    try {
+      const results = await window.api.podcastsSearch(term);
+      setState({ podcastSearchResults: results, podcastSearchLoading: false });
+    } catch (err) {
+      setState({ podcastSearchLoading: false, podcastSearchError: err.message || "Search failed" });
+    }
+  },
+  async addSearchedPodcast(ds) {
+    if (state.podcastSearchAddBusy[ds.feedUrl]) return;
+    setState({ podcastSearchAddBusy: { ...state.podcastSearchAddBusy, [ds.feedUrl]: true } });
+    try {
+      const podcasts = await window.api.podcastsAdd(ds.feedUrl);
+      setState({ podcasts, podcastSearchAddBusy: { ...state.podcastSearchAddBusy, [ds.feedUrl]: false } });
+    } catch (err) {
+      setState({ podcastSearchAddBusy: { ...state.podcastSearchAddBusy, [ds.feedUrl]: false } });
+      showToast(err.message || "Couldn't add that podcast");
+    }
+  },
+  async submitAddPodcast() {
+    const url = state.addPodcastUrl.trim();
+    if (!url || state.addPodcastBusy) return;
+    setState({ addPodcastBusy: true });
+    try {
+      const podcasts = await window.api.podcastsAdd(url);
+      // main.js already sends the "Podcast added" toast once the CLI call
+      // resolves — no need to show a second one here.
+      setState({ showAddPodcast: false, addPodcastBusy: false, podcasts });
+    } catch (err) {
+      setState({ addPodcastBusy: false });
+      showToast(err.message || "Couldn't add that podcast");
+    }
+  },
+  deletePodcast(ds) {
+    openConfirm({
+      message: `Remove "${ds.title}" from your podcasts?`,
+      confirmLabel: "Remove",
+      danger: true,
+      run: () => actions.performDeletePodcast(ds),
+    });
+  },
+  async performDeletePodcast(ds) {
+    setState({ podcastBusy: { ...state.podcastBusy, [ds.title]: true } });
+    try {
+      await window.api.podcastsRemove(ds.title);
+      // Removed locally right away rather than waiting on a second `light`
+      // round trip (its own Python process + a call to Light's API) just to
+      // refetch a list we can already produce ourselves — that second call
+      // was most of what made this feel slow. A silent background refresh
+      // still follows to reconcile, in case the delete didn't actually
+      // match what's on the account (e.g. a stale title).
+      setState({
+        podcasts: state.podcasts.filter((p) => p.title !== ds.title),
+        podcastBusy: { ...state.podcastBusy, [ds.title]: false },
+      });
+      refreshPodcasts({ silent: true });
+    } catch (err) {
+      showToast(err.message || "Couldn't remove that podcast");
+      setState({ podcastBusy: { ...state.podcastBusy, [ds.title]: false } });
+    }
+  },
+  openNotes() {
+    setState({ section: "notes" });
+    refreshNotes();
+  },
+  // Opens a draft that only exists in the renderer — nothing is created on
+  // the account until Save is clicked (see NEW_NOTE_ID). Silently discards
+  // whatever draft was already open if this is clicked again or another
+  // note is selected before saving; there's nothing server-side to clean up
+  // since it was never created.
+  addNote() {
+    setState({
+      selectedNoteId: NEW_NOTE_ID,
+      noteDetail: { id: NEW_NOTE_ID, title: "", noteType: "text", updatedAt: null, content: "" },
+      noteDetailLoading: false,
+      noteEditTitle: "",
+      noteEditContent: "",
+    });
+  },
+  async selectNote(ds) {
+    if (state.selectedNoteId === ds.id) return;
+    setState({ selectedNoteId: ds.id, noteDetail: null, noteDetailLoading: true, noteEditTitle: "", noteEditContent: "" });
+    try {
+      const note = await window.api.notesGet(ds.id);
+      // The user may have clicked another note (or navigated away) while
+      // this was in flight — don't clobber whatever's selected now with a
+      // response for a note that's no longer the one on screen.
+      if (state.selectedNoteId !== ds.id) return;
+      setState({ noteDetail: note, noteDetailLoading: false, noteEditTitle: note.title, noteEditContent: note.content || "" });
+    } catch (err) {
+      if (state.selectedNoteId !== ds.id) return;
+      setState({ noteDetailLoading: false });
+      showToast(err.message || "Couldn't load that note");
+    }
+  },
+  // Only runs on an explicit click of the Save button — each save is its
+  // own `light` invocation (a fresh Python process round-tripping to
+  // Light's API), so saving on every keystroke or field blur made normal
+  // typing/tabbing feel laggy. A new note (NEW_NOTE_ID) is created here for
+  // the first time; after that, saves are ordinary updates.
+  async saveNote() {
+    const n = state.noteDetail;
+    if (!n || n.noteType === "audio" || state.noteSaving || !noteIsDirty()) return;
+    const title = state.noteEditTitle.trim() || "Untitled";
+    const content = state.noteEditContent;
+    setState({ noteSaving: true });
+    try {
+      const saved = n.id === NEW_NOTE_ID ? await window.api.notesCreate(title, content) : await window.api.notesUpdate(n.id, { title, content });
+      const merged = { ...saved, content };
+      const stillSelected = state.selectedNoteId === n.id;
+      setState({
+        // The save itself always went through — only the fields that reflect
+        // what's on screen right now are conditional on not having navigated
+        // away to a different note in the meantime.
+        ...(stillSelected ? { selectedNoteId: merged.id, noteDetail: merged, noteEditTitle: merged.title } : {}),
+        noteSaving: false,
+        notes:
+          n.id === NEW_NOTE_ID
+            ? [merged, ...state.notes].sort(sortNotesByUpdated)
+            : state.notes.map((x) => (x.id === n.id ? { ...x, title: merged.title, updatedAt: merged.updatedAt, preview: content.split("\n")[0] || "" } : x)).sort(sortNotesByUpdated),
+      });
+    } catch (err) {
+      setState({ noteSaving: false });
+      showToast(err.message || "Couldn't save that note");
+    }
+  },
+  deleteNote(ds) {
+    const note = state.notes.find((n) => n.id === ds.id) || state.noteDetail;
+    setState({ noteContextMenu: null });
+    openConfirm({
+      message: `Delete "${(note && note.title) || "this note"}"? This can't be undone.`,
+      confirmLabel: "Delete",
+      danger: true,
+      run: () => actions.performDeleteNote(ds),
+    });
+  },
+  async performDeleteNote(ds) {
+    setState({ noteBusy: { ...state.noteBusy, [ds.id]: true } });
+    try {
+      await window.api.notesRemove(ds.id);
+      const wasSelected = state.selectedNoteId === ds.id;
+      setState({
+        notes: state.notes.filter((n) => n.id !== ds.id),
+        noteBusy: { ...state.noteBusy, [ds.id]: false },
+        ...(wasSelected ? { selectedNoteId: null, noteDetail: null, noteEditTitle: "", noteEditContent: "" } : {}),
+      });
+    } catch (err) {
+      showToast(err.message || "Couldn't delete that note");
+      setState({ noteBusy: { ...state.noteBusy, [ds.id]: false } });
+    }
+  },
+  closeNoteContextMenu() {
+    setState({ noteContextMenu: null });
+  },
+  async submitLightLogin() {
+    const email = state.lightEmail.trim();
+    const password = state.lightPassword;
+    if (!email || !password || state.lightLoginBusy) return;
+    setState({ lightLoginBusy: true, lightLoginError: null });
+    try {
+      const light = await window.api.lightLogin(email, password);
+      // Clear the password out of renderer state the instant it's no longer
+      // needed, win or lose — it has nowhere else to live once this returns.
+      setState({ light, lightPassword: "", lightLoginBusy: false });
+      if (light.loggedIn) {
+        showToast("Signed in to Light Account");
+        refreshPodcasts();
+        refreshNotes();
+      }
+    } catch (err) {
+      setState({ lightPassword: "", lightLoginBusy: false, lightLoginError: err.message || "Sign in failed" });
+    }
+  },
+  async selectLightDevice(ds) {
+    if (!ds.value || state.lightDeviceSelectBusy) return;
+    setState({ lightDeviceSelectBusy: true });
+    try {
+      const light = await window.api.lightSelectDevice(ds.value);
+      setState({ light, lightDeviceSelectBusy: false });
+      showToast("Device selected");
+      refreshPodcasts();
+      refreshNotes();
+    } catch (err) {
+      setState({ lightDeviceSelectBusy: false });
+      showToast(err.message || "Couldn't select that device");
+    }
+  },
+  async lightLogout() {
+    if (state.lightLogoutBusy) return;
+    setState({ lightLogoutBusy: true });
+    try {
+      const light = await window.api.lightLogout();
+      setState({ light, lightLogoutBusy: false, podcasts: [], notes: [], selectedNoteId: null, noteDetail: null });
+      showToast("Signed out of Light Account");
+    } catch (err) {
+      setState({ lightLogoutBusy: false });
+      showToast(err.message || "Sign out failed");
+    }
   },
   async toggleRingtonePlayback(ds) {
     if (state.playingRingtone === ds.remote) {
@@ -1253,8 +2028,16 @@ const actions = {
   stopTracking(ds) {
     const repo = state.repos.find((r) => r.id === ds.id);
     window.api.reposRemove(ds.id);
-    if (state.selectedId === ds.id) setState({ selectedId: null });
-    showToast(`Stopped tracking ${repo ? repo.name : "repo"}`);
+    // If it's still installed, the entry sticks around (now untracked) so
+    // there's no reason to boot the user out of the detail view for it.
+    if (state.selectedId === ds.id && !(repo && repo.installedVersion)) {
+      setState({ selectedId: null });
+    }
+    showToast(
+      repo && repo.installedVersion
+        ? `Stopped tracking ${repo.name} — still installed`
+        : `Stopped tracking ${repo ? repo.name : "repo"}`
+    );
   },
   async updateAll() {
     setState({ updateAllRunning: true });
@@ -1415,6 +2198,63 @@ async function refreshRingtones() {
   }
 }
 
+// `silent: true` is for reconciling in the background after an optimistic
+// local update (see performDeletePodcast) — it fetches the same way, but
+// skips the loading flag (no re-flashing "Loading…" over a list already on
+// screen) and skips the error toast (a background reconcile failing isn't
+// worth interrupting the user over; the next normal refresh will retry).
+async function refreshPodcasts({ silent = false } = {}) {
+  const light = state.light;
+  const canManage = light.loggedIn && (light.devices.length <= 1 || light.selectedDeviceId);
+  if (!canManage) return;
+  if (!silent) setState({ podcastsLoading: true });
+  try {
+    const podcasts = await window.api.podcastsList();
+    setState({ podcasts });
+  } catch (err) {
+    if (!silent) showToast(err.message || "Couldn't load podcasts");
+  } finally {
+    if (!silent) setState({ podcastsLoading: false });
+  }
+}
+
+async function refreshNotes({ silent = false } = {}) {
+  const light = state.light;
+  const canManage = light.loggedIn && (light.devices.length <= 1 || light.selectedDeviceId);
+  if (!canManage) return;
+  if (!silent) setState({ notesLoading: true });
+  try {
+    const notes = await window.api.notesList();
+    setState({ notes });
+    // Previews are a lot slower (one extra API round trip per note — see
+    // notes:listPreviews) — fetch them separately and merge in whenever
+    // they land, instead of making the list wait on them to appear at all.
+    // Not awaited: this runs in the background regardless of `silent`.
+    enrichNotePreviews();
+  } catch (err) {
+    if (!silent) showToast(err.message || "Couldn't load notes");
+  } finally {
+    if (!silent) setState({ notesLoading: false });
+  }
+}
+
+// See refreshNotes — fire-and-forget by design. `notesGeneration` guards
+// against a slow previews fetch clobbering a list that's since moved on
+// (e.g. the account/device was switched, or notes were added/removed)
+// while it was still in flight.
+let notesGeneration = 0;
+async function enrichNotePreviews() {
+  const generation = ++notesGeneration;
+  try {
+    const withPreviews = await window.api.notesListPreviews();
+    if (generation !== notesGeneration) return;
+    const previewById = new Map(withPreviews.map((n) => [n.id, n.preview]));
+    setState({ notes: state.notes.map((n) => (previewById.has(n.id) ? { ...n, preview: previewById.get(n.id) } : n)) });
+  } catch {
+    // Best-effort — the list is already fully usable without previews.
+  }
+}
+
 async function inspectAndShowDrop(filePath) {
   try {
     const parsed = await window.api.apkInspect(filePath);
@@ -1436,6 +2276,12 @@ document.addEventListener("click", (e) => {
 });
 
 document.addEventListener("contextmenu", (e) => {
+  const noteEl = e.target.closest("[data-context-note]");
+  if (noteEl) {
+    e.preventDefault();
+    setState({ noteContextMenu: { x: e.clientX, y: e.clientY, noteId: noteEl.dataset.contextNote } });
+    return;
+  }
   const el = e.target.closest("[data-context-repo]");
   if (!el) return;
   e.preventDefault();
@@ -1446,12 +2292,38 @@ document.addEventListener("input", (e) => {
   const bind = e.target.dataset && e.target.dataset.bind;
   if (bind) {
     state[bind] = e.target.value;
+    // Deliberately not a setState() — this is exactly what keeps typing
+    // from re-rendering (and losing cursor position/focus) on every
+    // keystroke. But that means the Save button's disabled state, which
+    // depends on noteEditTitle/noteEditContent, would otherwise only catch
+    // up whenever some unrelated event happens to trigger a full render —
+    // patch just that one button imperatively instead.
+    if (bind === "noteEditTitle" || bind === "noteEditContent") patchNoteSaveButton();
   }
 });
 
+// Scoped to <select> specifically — the shared click listener above already
+// handles every button/div with data-action, and a <select> needs "change"
+// instead since choosing an option isn't a click on the element itself.
+document.addEventListener("change", (e) => {
+  const el = e.target.closest("select[data-action]");
+  if (!el) return;
+  const fn = actions[el.dataset.action];
+  if (fn) fn({ ...el.dataset, value: el.value });
+});
+
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && e.target.dataset && e.target.dataset.bind === "addRepoUrl") {
-    actions.submitAddRepo();
+  if (e.key === "Enter" && e.target.dataset && e.target.dataset.bind) {
+    if (e.target.dataset.bind === "addRepoUrl") actions.submitAddRepo();
+    else if (e.target.dataset.bind === "addPodcastUrl") actions.submitAddPodcast();
+    else if (e.target.dataset.bind === "podcastSearchQuery") actions.searchPodcasts();
+    else if (e.target.dataset.bind === "lightEmail" || e.target.dataset.bind === "lightPassword") actions.submitLightLogin();
+    // The note title is a single-line <input> — Enter saves the note
+    // (same as clicking Save) rather than doing nothing, which is all a
+    // plain text input does with Enter by default. The content <textarea>
+    // is deliberately not handled here — Enter there needs to insert a
+    // newline like normal, not trigger a save.
+    else if (e.target.dataset.noteField === "title") actions.saveNote();
   }
   if (state.lightboxIndex != null) {
     if (e.key === "Escape") actions.closeLightbox();
@@ -1471,7 +2343,23 @@ document.addEventListener("keydown", (e) => {
 
 /* ---------- IPC subscriptions ---------- */
 
+// boot() below fetches an initial device snapshot via deviceGet() in
+// parallel with several much slower calls (repo list, media folder
+// listings, lightStatus() shelling out to a Python CLI) inside one
+// Promise.all, then applies all of them together once every one of them
+// resolves. The main process, meanwhile, starts polling and pushes its
+// first device:update immediately on launch — usually well before that
+// Promise.all finishes. Without this flag, boot()'s stale deviceGet()
+// snapshot (captured back when it was first called, often still "none")
+// would overwrite the live "connected" this listener already applied,
+// which is exactly what showed up as the phone connecting and then
+// immediately disconnecting again on every launch. Once a live update has
+// landed, it's always newer than whatever boot() is holding, so boot()
+// defers to it instead of clobbering it.
+let receivedLiveDeviceUpdate = false;
+
 window.api.onDeviceUpdate((device) => {
+  receivedLiveDeviceUpdate = true;
   const justConnected = device.status === "connected" && state.device.status !== "connected";
   setState({ device });
   if (justConnected && state.section === "ringtones") refreshRingtones();
@@ -1498,23 +2386,47 @@ document.addEventListener("dblclick", (e) => {
 
 (async function boot() {
   const mediaKeys = ["photos", "screenshots", "zero", "videos"];
-  const [device, repos, windowMaximized, mediaSettings, osSettings, ...mediaLists] = await Promise.all([
+  const [device, repos, windowMaximized, mediaSettings, osSettings, light, podcastSearchAvailable, ...mediaLists] = await Promise.all([
     window.api.deviceGet(),
     window.api.reposList(),
     window.api.windowIsMaximized(),
     window.api.mediaGetSettings(),
     window.api.osSettingsGet(),
+    window.api.lightStatus(),
+    window.api.podcastsSearchAvailable(),
     ...mediaKeys.map((k) => window.api.mediaList(k)),
   ]);
   const media = {};
   mediaKeys.forEach((k, i) => (media[k] = mediaLists[i]));
   setState({
-    device,
+    // Only apply this — see the comment by receivedLiveDeviceUpdate above —
+    // if a live device:update hasn't already superseded it.
+    ...(receivedLiveDeviceUpdate ? {} : { device }),
     repos,
     windowMaximized,
     mediaBackupDir: mediaSettings.backupDir,
     mediaTypes: mediaSettings.types,
     media,
+    light,
+    podcastSearchAvailable,
   });
   applyOsSettings(osSettings);
+
+  // Podcasts/notes only ever got fetched when their own sidebar item was
+  // clicked, which left the sidebar's counts next to them reading 0 (their
+  // initial state values) until that first visit. Load both silently in the
+  // background right away instead, same as the repo refresh below, so the
+  // counts are right from the moment the app opens.
+  refreshPodcasts({ silent: true });
+  refreshNotes({ silent: true });
+
+  // repos:list only returns whatever releases were cached from the last
+  // add/refresh — it never hits GitHub itself. Kick off a silent
+  // background refresh per tracked repo on boot so "update available"
+  // reflects reality without the user having to remove/re-add the repo.
+  repos
+    .filter((r) => !r.sideloaded)
+    .forEach((r) => {
+      window.api.reposRefresh(r.id).catch(() => {});
+    });
 })();

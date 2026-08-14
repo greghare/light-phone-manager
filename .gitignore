@@ -2,5 +2,9 @@ node_modules/
 dist/
 resources/platform-tools/*/
 !resources/platform-tools/.gitkeep
+resources/light-cli/win32/
+resources/light-cli/darwin/
+resources/light-cli/linux/
+src/main/podcastindex-credentials.generated.json
 *.log
 .DS_Store

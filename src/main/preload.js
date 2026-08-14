@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("api", {
   deviceReboot: () => ipcRenderer.invoke("device:reboot"),
 
   osSettingsGet: () => ipcRenderer.invoke("os-settings:get"),
+  osSettingsRefresh: () => ipcRenderer.invoke("os-settings:refresh"),
   osSettingsSetAnimations: (on) => ipcRenderer.invoke("os-settings:setAnimations", on),
   osSettingsSetShowExternalTools: (on) => ipcRenderer.invoke("os-settings:setShowExternalTools", on),
   osSettingsSetChromiumHidden: (hidden) => ipcRenderer.invoke("os-settings:setChromiumHidden", hidden),
@@ -50,6 +51,24 @@ contextBridge.exposeInMainWorld("api", {
   ringtonesUpload: (remoteFilename, backupFilename) => ipcRenderer.invoke("ringtones:pickAndUpload", { remoteFilename, backupFilename }),
   ringtonesRestore: (remoteFilename, backupFilename) => ipcRenderer.invoke("ringtones:restore", { remoteFilename, backupFilename }),
   ringtonesGetPlayUrl: (remoteFilename) => ipcRenderer.invoke("ringtones:getPlayUrl", { remoteFilename }),
+
+  lightStatus: () => ipcRenderer.invoke("light:status"),
+  lightLogin: (email, password) => ipcRenderer.invoke("light:login", { email, password }),
+  lightSelectDevice: (deviceId) => ipcRenderer.invoke("light:selectDevice", deviceId),
+  lightLogout: () => ipcRenderer.invoke("light:logout"),
+
+  podcastsList: () => ipcRenderer.invoke("podcasts:list"),
+  podcastsAdd: (rssUrl) => ipcRenderer.invoke("podcasts:add", rssUrl),
+  podcastsRemove: (title) => ipcRenderer.invoke("podcasts:remove", title),
+  podcastsSearchAvailable: () => ipcRenderer.invoke("podcasts:searchAvailable"),
+  podcastsSearch: (term) => ipcRenderer.invoke("podcasts:search", term),
+
+  notesList: () => ipcRenderer.invoke("notes:list"),
+  notesListPreviews: () => ipcRenderer.invoke("notes:listPreviews"),
+  notesGet: (noteId) => ipcRenderer.invoke("notes:get", noteId),
+  notesCreate: (title, content) => ipcRenderer.invoke("notes:create", { title, content }),
+  notesUpdate: (noteId, { title, content }) => ipcRenderer.invoke("notes:update", { noteId, title, content }),
+  notesRemove: (noteId) => ipcRenderer.invoke("notes:remove", noteId),
 
   windowMinimize: () => ipcRenderer.invoke("window:minimize"),
   windowToggleMaximize: () => ipcRenderer.invoke("window:toggleMaximize"),

@@ -13,6 +13,8 @@ const store = require("./store");
 const mediaLib = require("./media");
 const ringtonesLib = require("./ringtones");
 const ffmpegLib = require("./ffmpeg");
+const lightLib = require("./light");
+const podcastindexLib = require("./podcastindex");
 
 const DEVICE_POLL_MS = 2500;
 
@@ -42,6 +44,39 @@ function versionsEqual(a, b) {
   if (a == null || b == null) return false;
   const norm = (s) => String(s).trim().replace(/^v/i, "");
   return norm(a) === norm(b);
+}
+
+// Releases are listed newest-published-first, but "most recently published"
+// isn't the same as "highest version" — a lower-numbered stable release can
+// go out after a higher-numbered beta (e.g. v1.4.0 published after someone
+// already sideloaded v2.0.0-beta.2). Comparing numerically here, instead of
+// just checking inequality, keeps "Update All" from quietly downgrading a
+// repo like that. Mirrors the same helper in renderer/app.js.
+function parseVersion(v) {
+  const s = String(v).trim().replace(/^v/i, "");
+  const hyphen = s.indexOf("-");
+  const main = hyphen === -1 ? s : s.slice(0, hyphen);
+  const pre = hyphen === -1 ? null : s.slice(hyphen + 1);
+  return { parts: main.split(".").map((p) => parseInt(p, 10) || 0), pre };
+}
+
+function compareVersions(a, b) {
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
+  const len = Math.max(pa.parts.length, pb.parts.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa.parts[i] || 0) - (pb.parts[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  if (pa.pre && !pb.pre) return -1;
+  if (!pa.pre && pb.pre) return 1;
+  if (pa.pre && pb.pre) return pa.pre.localeCompare(pb.pre);
+  return 0;
+}
+
+function isVersionNewer(candidate, base) {
+  if (candidate == null || base == null) return false;
+  return compareVersions(candidate, base) > 0;
 }
 
 // GitHub tags can be named almost anything ("chess-v1.0.0-alpha") with no
@@ -304,6 +339,42 @@ async function fetchRingtoneEntries(serial) {
   return ringtonesLib.buildEntries(filenames, store.getSettings().ringtoneOverrides || {});
 }
 
+// ---------- Light account & podcasts ----------
+
+function lightDeviceSelector() {
+  const { deviceId, phoneNumber } = store.getSettings().light || {};
+  return deviceId ? { deviceId } : phoneNumber ? { phoneNumber } : null;
+}
+
+// This tool only has any use for a Light Phone 3 (SKU TLP301) — an account
+// can also list older Light Phone 2s, which everything downstream (the
+// settings device picker, the "pick a device" podcasts gate) should just
+// never see or count.
+function onlyTlp301(devices) {
+  return devices.filter((d) => (d.sku || "").toUpperCase() === "TLP301");
+}
+
+// A single matching device never needs an explicit choice — auto-select it
+// so "signed in" doesn't dead-end into a "pick a device" prompt with
+// nothing to pick from. Keeps whatever was already chosen if it's still
+// valid; otherwise, with more than one candidate, leaves it unset.
+function autoSelectDeviceId(devices, current) {
+  if (devices.length === 1) return devices[0].deviceId;
+  return devices.some((d) => d.deviceId === current) ? current : null;
+}
+
+async function getLightStatus() {
+  const result = await lightLib.status();
+  const devices = onlyTlp301(result.devices);
+  const settings = store.getSettings();
+  const current = settings.light?.deviceId || null;
+  const deviceId = result.loggedIn ? autoSelectDeviceId(devices, current) : current;
+  if (result.loggedIn && deviceId !== current) {
+    store.setSettings({ light: { deviceId, phoneNumber: null } });
+  }
+  return { ...result, devices, selectedDeviceId: deviceId };
+}
+
 // ---------- app logs ----------
 
 let activeLogcat = null; // { repoId, child }
@@ -513,12 +584,19 @@ async function performInstall(repoId, version) {
     await adb.install(serial, apkPath, (line) => send("install:log", { repoId, line }));
   } catch (err) {
     // Android blocks installing a lower versionCode over a release-signed
-    // build (the -d flag in adb.js only covers debuggable ones). The only
-    // way to actually roll back is to remove the current install first —
-    // that does mean losing that tool's local data, which is inherent to
-    // how Android handles downgrades, not something adb can avoid.
+    // build (the -d flag in adb.js only covers debuggable ones), and it
+    // separately blocks installing over an existing package whose signing
+    // certificate doesn't match (e.g. the upstream project switched
+    // keystores between releases). Both cases have the same only fix: remove
+    // the current install first — that does mean losing that tool's local
+    // data, which is inherent to how Android handles these cases, not
+    // something adb can avoid.
     if (repo.packageId && /INSTALL_FAILED_VERSION_DOWNGRADE/i.test(err.message)) {
       send("install:log", { repoId, line: `$ downgrade blocked by Android — uninstalling ${repo.packageId} first (its data will be lost), then reinstalling ${version}` });
+      await adb.uninstall(serial, repo.packageId, (line) => send("install:log", { repoId, line }));
+      await adb.install(serial, apkPath, (line) => send("install:log", { repoId, line }));
+    } else if (repo.packageId && /INSTALL_FAILED_UPDATE_INCOMPATIBLE/i.test(err.message)) {
+      send("install:log", { repoId, line: `$ signature mismatch blocked by Android — uninstalling ${repo.packageId} first (its data will be lost), then reinstalling ${version}` });
       await adb.uninstall(serial, repo.packageId, (line) => send("install:log", { repoId, line }));
       await adb.install(serial, apkPath, (line) => send("install:log", { repoId, line }));
     } else {
@@ -568,6 +646,20 @@ function registerIpc() {
   });
 
   ipcMain.handle("os-settings:get", () => osSettings);
+
+  // pollDevice only calls refreshOsSettings once, right as a device is first
+  // seen connected — it's a handful of adb round trips, so it doesn't always
+  // win the race against the renderer's own boot-time os-settings:get (which
+  // just returns whatever's cached so far). That can leave the Settings
+  // screen's toggles showing stale/default values the first time it's
+  // opened. Let the renderer ask for a fresh read on demand instead of
+  // waiting for the connection-time fetch (or the next reconnect) to catch up.
+  ipcMain.handle("os-settings:refresh", async () => {
+    if (deviceState.status === "connected") {
+      await refreshOsSettings(deviceState.serial).catch((err) => console.error("refreshOsSettings failed:", err));
+    }
+    return osSettings;
+  });
 
   ipcMain.handle("os-settings:setAnimations", async (_evt, on) => {
     const serial = requireConnectedDevice();
@@ -686,7 +778,23 @@ function registerIpc() {
   });
 
   ipcMain.handle("repos:remove", (_evt, id) => {
-    store.removeRepo(id);
+    const repo = store.getRepos().find((r) => r.id === id);
+    // If it's still installed on the device, don't drop it from the list
+    // entirely — just stop tracking the repo so it keeps showing up under
+    // Installed, the same way a manually-sideloaded app would.
+    if (repo && repo.installedVersion) {
+      store.patchRepo(id, {
+        owner: null,
+        repo: null,
+        author: null,
+        category: repo.category === "Utility" ? "On Device" : repo.category,
+        repoUrl: null,
+        releases: [],
+        sideloaded: true,
+      });
+    } else {
+      store.removeRepo(id);
+    }
     broadcastRepos();
   });
 
@@ -720,7 +828,7 @@ function registerIpc() {
   ipcMain.handle("install:updateAll", async () => {
     const updatable = store
       .getRepos()
-      .filter((r) => r.installedVersion && r.releases[0] && !versionsEqual(releaseVersion(r.releases[0]), r.installedVersion));
+      .filter((r) => r.installedVersion && r.releases[0] && isVersionNewer(releaseVersion(r.releases[0]), r.installedVersion));
     for (const repo of updatable) {
       try {
         await performInstall(repo.id, repo.releases[0].version);
@@ -935,6 +1043,103 @@ function registerIpc() {
     const localPath = path.join(localDir, remoteFilename);
     await adb.pullFile(serial, remotePath, localPath);
     return pathToFileURL(localPath).href;
+  });
+
+  ipcMain.handle("light:status", () => getLightStatus());
+
+  ipcMain.handle("light:login", async (_evt, { email, password }) => {
+    if (!email || !password) throw new Error("Enter your Light email and password.");
+    const devices = onlyTlp301(await lightLib.login(email, password));
+    if (devices.length === 0) throw new Error("No Light Phone 3 found on that Light account.");
+
+    const current = store.getSettings().light?.deviceId || null;
+    const deviceId = autoSelectDeviceId(devices, current);
+    store.setSettings({ light: { deviceId, phoneNumber: null } });
+
+    const result = { installed: true, loggedIn: true, devices, error: null, selectedDeviceId: deviceId };
+    send("toast", { message: "Signed in to Light Account" });
+    return result;
+  });
+
+  ipcMain.handle("light:selectDevice", async (_evt, deviceId) => {
+    store.setSettings({ light: { deviceId, phoneNumber: null } });
+    return getLightStatus();
+  });
+
+  ipcMain.handle("light:logout", async () => {
+    await lightLib.logout();
+    store.setSettings({ light: { deviceId: null, phoneNumber: null } });
+    send("toast", { message: "Signed out of Light Account" });
+    return getLightStatus();
+  });
+
+  ipcMain.handle("podcasts:list", async () => {
+    const selector = lightDeviceSelector();
+    return lightLib.podcastsList(selector);
+  });
+
+  ipcMain.handle("podcasts:searchAvailable", () => podcastindexLib.isConfigured());
+
+  ipcMain.handle("podcasts:search", async (_evt, term) => {
+    if (!term || !term.trim()) return [];
+    return podcastindexLib.searchByTerm(term.trim());
+  });
+
+  ipcMain.handle("podcasts:add", async (_evt, rssUrl) => {
+    if (!rssUrl || !rssUrl.trim()) throw new Error("Enter a podcast RSS feed URL.");
+    const selector = lightDeviceSelector();
+    await lightLib.podcastsAdd(rssUrl.trim(), selector);
+    send("toast", { message: "Podcast added" });
+    return lightLib.podcastsList(selector);
+  });
+
+  // Doesn't re-fetch the list afterward the way `podcasts:add` does — each
+  // `light` invocation is its own Python process round-tripping to Light's
+  // API, so that would be a second full one just to hand back something the
+  // renderer can already produce itself (the list minus the title it just
+  // asked to remove). The renderer updates optimistically and reconciles
+  // with a real list in the background instead.
+  ipcMain.handle("podcasts:remove", async (_evt, title) => {
+    const selector = lightDeviceSelector();
+    await lightLib.podcastsDelete(title, selector);
+    send("toast", { message: `Removed "${title}"` });
+  });
+
+  ipcMain.handle("notes:list", async () => {
+    const selector = lightDeviceSelector();
+    return lightLib.notesList(selector);
+  });
+
+  // Separate from notes:list because it's a lot slower (one extra API round
+  // trip per note) — the renderer fetches the fast list first and calls
+  // this after to fill in previews once they're ready, rather than making
+  // every notes:list caller pay for previews it might not even show yet.
+  ipcMain.handle("notes:listPreviews", async () => {
+    const selector = lightDeviceSelector();
+    return lightLib.notesListPreviews(selector);
+  });
+
+  ipcMain.handle("notes:get", async (_evt, noteId) => {
+    const selector = lightDeviceSelector();
+    return lightLib.notesGet(noteId, selector);
+  });
+
+  ipcMain.handle("notes:create", async (_evt, { title, content }) => {
+    const selector = lightDeviceSelector();
+    const note = await lightLib.notesCreate(title, content, selector);
+    send("toast", { message: "Note added" });
+    return note;
+  });
+
+  ipcMain.handle("notes:update", async (_evt, { noteId, title, content }) => {
+    const selector = lightDeviceSelector();
+    return lightLib.notesUpdate(noteId, { title, content }, selector);
+  });
+
+  ipcMain.handle("notes:remove", async (_evt, noteId) => {
+    const selector = lightDeviceSelector();
+    await lightLib.notesDelete(noteId, selector);
+    send("toast", { message: "Note deleted" });
   });
 
   ipcMain.handle("window:minimize", () => mainWindow?.minimize());

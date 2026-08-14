@@ -6,7 +6,10 @@ const { app } = require("electron");
 
 let dataFile = null;
 let cacheDir = null;
-let state = { repos: [], settings: { githubToken: "", photoBackupDir: "", ringtoneOverrides: {} } };
+// settings.light only ever holds the non-secret device selector (which of
+// the account's devices podcast commands should target) — never the email
+// or password. See light.js for why those are never persisted.
+let state = { repos: [], settings: { githubToken: "", photoBackupDir: "", ringtoneOverrides: {}, light: { deviceId: null, phoneNumber: null } } };
 
 function init() {
   const userData = app.getPath("userData");
@@ -20,7 +23,13 @@ function init() {
       const parsed = JSON.parse(fs.readFileSync(dataFile, "utf8"));
       state = {
         repos: Array.isArray(parsed.repos) ? parsed.repos : [],
-        settings: { githubToken: "", photoBackupDir: "", ringtoneOverrides: {}, ...(parsed.settings || {}) },
+        settings: {
+          githubToken: "",
+          photoBackupDir: "",
+          ringtoneOverrides: {},
+          light: { deviceId: null, phoneNumber: null },
+          ...(parsed.settings || {}),
+        },
       };
     } catch (err) {
       console.error("Failed to read repos.json, starting fresh:", err);

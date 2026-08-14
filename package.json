@@ -10,11 +10,13 @@
     "scripts": {
         "start": "electron .",
         "fetch-platform-tools": "node scripts/fetch-platform-tools.js",
-        "predist": "node scripts/fetch-platform-tools.js",
+        "fetch-light-cli": "node scripts/fetch-light-cli.js",
+        "generate-podcastindex-key": "node scripts/generate-podcastindex-key.js",
+        "predist": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js && node scripts/generate-podcastindex-key.js",
         "dist": "electron-builder",
-        "dist:win": "node scripts/fetch-platform-tools.js && electron-builder --win",
-        "dist:mac": "node scripts/fetch-platform-tools.js && electron-builder --mac",
-        "dist:linux": "node scripts/fetch-platform-tools.js && electron-builder --linux"
+        "dist:win": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js win32 && node scripts/generate-podcastindex-key.js && electron-builder --win",
+        "dist:mac": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js darwin && node scripts/generate-podcastindex-key.js && electron-builder --mac",
+        "dist:linux": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js linux && node scripts/generate-podcastindex-key.js && electron-builder --linux"
     },
     "build": {
         "appId": "com.greghare.lightphonemanager",
@@ -34,6 +36,20 @@
         "asarUnpack": [
             "node_modules/@ffmpeg-installer/**"
         ],
+        "extraResources": [
+            {
+                "from": "resources/README-light-cli.txt",
+                "to": "light-cli/README.txt"
+            },
+            {
+                "from": "resources/light-cli/run_light.py",
+                "to": "light-cli/run_light.py"
+            },
+            {
+                "from": "resources/light-cli/notes_cli.py",
+                "to": "light-cli/notes_cli.py"
+            }
+        ],
         "mac": {
             "target": [
                 "zip",
@@ -44,6 +60,10 @@
                 {
                     "from": "resources/platform-tools/darwin",
                     "to": "platform-tools"
+                },
+                {
+                    "from": "resources/light-cli/darwin",
+                    "to": "light-cli/darwin"
                 }
             ]
         },
@@ -57,6 +77,10 @@
                 {
                     "from": "resources/platform-tools/linux",
                     "to": "platform-tools"
+                },
+                {
+                    "from": "resources/light-cli/linux",
+                    "to": "light-cli/linux"
                 }
             ]
         },
@@ -68,6 +92,10 @@
                 {
                     "from": "resources/platform-tools/win32",
                     "to": "platform-tools"
+                },
+                {
+                    "from": "resources/light-cli/win32",
+                    "to": "light-cli/win32"
                 }
             ]
         }
