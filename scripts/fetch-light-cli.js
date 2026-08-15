@@ -161,6 +161,15 @@ async function fetchOne(platformKey, hostPython) {
     // all in one pip invocation — installing them one at a time makes pip
     // refuse to merge shared namespace-package directories (e.g. jaraco.*)
     // across separate --target calls.
+    //
+    // Needs the same --platform/--python-version/--implementation/--abi
+    // overrides as the download step above, and for the same reason: pip
+    // install (just like pip download) otherwise checks wheel compatibility
+    // against the *host* interpreter running pip, not the target platform.
+    // Every dependency here is a pure-Python "py3-none-any" wheel except
+    // rapidfuzz, which is compiled and tagged cp311-<target> — that's the
+    // one pip actually rejects when the host interpreter's own tags (e.g. a
+    // different Python version, or 32-bit on a 64-bit target) don't match.
     const sitePackages = path.join(destDir, target.sitePackages);
     fs.mkdirSync(sitePackages, { recursive: true });
     const wheels = fs.readdirSync(wheelsDir).filter((f) => f.endsWith(".whl")).map((f) => path.join(wheelsDir, f));
@@ -169,6 +178,11 @@ async function fetchOne(platformKey, hostPython) {
       "-m", "pip", "install",
       "--no-deps", "--no-user",
       "--target", sitePackages,
+      "--python-version", PY_MINOR,
+      "--platform", target.wheelPlatform,
+      "--implementation", "cp",
+      "--abi", `cp${PY_MINOR.replace(".", "")}`,
+      "--only-binary", ":all:",
       ...wheels,
     ], { stdio: "inherit" });
 
