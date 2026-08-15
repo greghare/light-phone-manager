@@ -37,16 +37,19 @@ const PY_VERSION = "3.11.15";
 const PY_MINOR = "3.11"; // site-packages dir on posix is lib/python<PY_MINOR>/site-packages
 // keyring (a light-phone-api dependency, used to cache the CLI's login
 // token between runs) pulls in jaraco.context, which on Python < 3.12
-// unconditionally imports the `backports.tarfile` backport package. That
-// requirement is declared with a `python_version < "3.12"` marker in
-// jaraco.context's own metadata, but pip evaluates markers like that against
-// the *host* interpreter running pip, not the --python-version override
-// below (same "PLATFORM MARKER CAVEAT" as sys_platform, noted where that
-// override is used) — so on a host whose own Python doesn't happen to match,
-// pip silently drops it from the resolved set and it's missing at runtime
-// (ModuleNotFoundError: No module named 'backports'). Listed explicitly here
-// so it's always included regardless of what's resolving it.
-const LIGHT_CLI_SPEC = ["light-phone-cli-tui==0.3.0", "backports.tarfile"];
+// unconditionally imports the `backports.tarfile` backport package. keyring
+// itself also has a `compat/py312.py` shim that unconditionally imports
+// `importlib_metadata` on Python < 3.12. Both requirements are declared with
+// a `python_version < "3.12"` marker in the respective package's own
+// metadata, but pip evaluates markers like that against the *host*
+// interpreter running pip, not the --python-version override below (same
+// "PLATFORM MARKER CAVEAT" as sys_platform, noted where that override is
+// used) — so on a host whose own Python doesn't happen to match (e.g. it has
+// Python 3.12+ on PATH), pip silently drops both from the resolved set and
+// they're missing at runtime (ModuleNotFoundError: No module named
+// 'backports' / 'importlib_metadata'). Listed explicitly here so they're
+// always included regardless of what's resolving it.
+const LIGHT_CLI_SPEC = ["light-phone-cli-tui==0.3.0", "backports.tarfile", "importlib_metadata"];
 
 // electron-builder platform key -> where to get a CPython for it, and which
 // wheel platform tag(s) match it on PyPI. One x86_64 build per OS, same as
