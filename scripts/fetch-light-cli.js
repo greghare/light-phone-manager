@@ -35,31 +35,54 @@ const RESOURCES_DIR = path.join(__dirname, "..", "resources", "light-cli");
 const PBS_TAG = "20260804";
 const PY_VERSION = "3.11.15";
 const PY_MINOR = "3.11"; // site-packages dir on posix is lib/python<PY_MINOR>/site-packages
-const LIGHT_CLI_SPEC = "light-phone-cli-tui==0.3.0";
+// keyring (a light-phone-api dependency, used to cache the CLI's login
+// token between runs) pulls in jaraco.context, which on Python < 3.12
+// unconditionally imports the `backports.tarfile` backport package. That
+// requirement is declared with a `python_version < "3.12"` marker in
+// jaraco.context's own metadata, but pip evaluates markers like that against
+// the *host* interpreter running pip, not the --python-version override
+// below (same "PLATFORM MARKER CAVEAT" as sys_platform, noted where that
+// override is used) — so on a host whose own Python doesn't happen to match,
+// pip silently drops it from the resolved set and it's missing at runtime
+// (ModuleNotFoundError: No module named 'backports'). Listed explicitly here
+// so it's always included regardless of what's resolving it.
+const LIGHT_CLI_SPEC = ["light-phone-cli-tui==0.3.0", "backports.tarfile"];
 
 // electron-builder platform key -> where to get a CPython for it, and which
-// wheel platform tag matches it on PyPI. One x86_64 build per OS, same as
+// wheel platform tag(s) match it on PyPI. One x86_64 build per OS, same as
 // fetch-platform-tools.js does for adb — an arm64 host runs it through the
 // OS's own x86_64 emulation (Rosetta on mac, Prism on Windows-on-ARM; on
 // Linux there's no such fallback, so arm64 Linux isn't supported here yet).
+//
+// wheelPlatforms is a list, not a single tag, because pip's --platform
+// filter is an exact match with no awareness that manylinux tags nest
+// (a manylinux_2_17 wheel installs fine on a manylinux_2_28 system, being
+// the older/broader ABI) — asking for only the newest tag makes pip treat
+// any package that hasn't republished under it as having no compatible
+// wheel at all. That's exactly what happened with cffi (a transitive dep of
+// keyring's optional Linux SecretStorage backend, via cryptography): it had
+// no manylinux_2_28 wheel, so pip kept downgrading cryptography looking for
+// one that would let it avoid needing cffi at all, ran out of versions, and
+// failed the whole resolution. Listing progressively older/broader tags as
+// fallbacks lets pip pick whichever one each individual package actually
+// published — newest first so rapidfuzz (which dropped anything older than
+// manylinux_2_28) still gets it.
 const TARGETS = {
   win32: {
     pbsTriple: "x86_64-pc-windows-msvc",
-    wheelPlatform: "win_amd64",
+    wheelPlatforms: ["win_amd64"],
     pythonBin: path.join("python", "python.exe"),
     sitePackages: path.join("python", "Lib", "site-packages"),
   },
   darwin: {
     pbsTriple: "x86_64-apple-darwin",
-    wheelPlatform: "macosx_11_0_x86_64",
+    wheelPlatforms: ["macosx_11_0_x86_64", "macosx_10_9_x86_64"],
     pythonBin: path.join("python", "bin", "python3"),
     sitePackages: path.join("python", "lib", `python${PY_MINOR}`, "site-packages"),
   },
   linux: {
     pbsTriple: "x86_64-unknown-linux-gnu",
-    // manylinux_2_28 = glibc 2.28+ (Ubuntu 20.04+, Debian 11+, RHEL 8+,
-    // Fedora 29+) — rapidfuzz 3.14+ no longer publishes manylinux2014 wheels.
-    wheelPlatform: "manylinux_2_28_x86_64",
+    wheelPlatforms: ["manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64"],
     pythonBin: path.join("python", "bin", "python3"),
     sitePackages: path.join("python", "lib", `python${PY_MINOR}`, "site-packages"),
   },
@@ -113,7 +136,7 @@ async function fetchOne(platformKey, hostPython) {
   const target = TARGETS[platformKey];
   const destDir = path.join(RESOURCES_DIR, platformKey);
   const marker = path.join(destDir, ".version");
-  const expectedMarker = `${PBS_TAG}|${PY_VERSION}|${LIGHT_CLI_SPEC}`;
+  const expectedMarker = `${PBS_TAG}|${PY_VERSION}|${LIGHT_CLI_SPEC.join(",")}`;
 
   if (fs.existsSync(marker) && fs.readFileSync(marker, "utf8").trim() === expectedMarker) {
     console.log(`[light-cli] ${platformKey}: already present, skipping (delete ${destDir} to refetch)`);
@@ -146,12 +169,13 @@ async function fetchOne(platformKey, hostPython) {
     // needs something OS-specific here.
     const wheelsDir = path.join(tmpDir, "wheels");
     fs.mkdirSync(wheelsDir);
-    console.log(`[light-cli] ${platformKey}: downloading ${LIGHT_CLI_SPEC} + deps for ${target.wheelPlatform}`);
+    const platformArgs = target.wheelPlatforms.flatMap((p) => ["--platform", p]);
+    console.log(`[light-cli] ${platformKey}: downloading ${LIGHT_CLI_SPEC.join(", ")} + deps for ${target.wheelPlatforms.join("/")}`);
     execFileSync(hostPython, [
-      "-m", "pip", "download", LIGHT_CLI_SPEC,
+      "-m", "pip", "download", ...LIGHT_CLI_SPEC,
       "-d", wheelsDir,
       "--python-version", PY_MINOR,
-      "--platform", target.wheelPlatform,
+      ...platformArgs,
       "--implementation", "cp",
       "--abi", `cp${PY_MINOR.replace(".", "")}`,
       "--only-binary", ":all:",
@@ -179,7 +203,7 @@ async function fetchOne(platformKey, hostPython) {
       "--no-deps", "--no-user",
       "--target", sitePackages,
       "--python-version", PY_MINOR,
-      "--platform", target.wheelPlatform,
+      ...platformArgs,
       "--implementation", "cp",
       "--abi", `cp${PY_MINOR.replace(".", "")}`,
       "--only-binary", ":all:",
