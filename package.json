@@ -11,12 +11,11 @@
         "start": "electron .",
         "fetch-platform-tools": "node scripts/fetch-platform-tools.js",
         "fetch-light-cli": "node scripts/fetch-light-cli.js",
-        "generate-podcastindex-key": "node scripts/generate-podcastindex-key.js",
-        "predist": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js && node scripts/generate-podcastindex-key.js",
+        "predist": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js",
         "dist": "electron-builder",
-        "dist:win": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js win32 && node scripts/generate-podcastindex-key.js && electron-builder --win",
-        "dist:mac": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js darwin && node scripts/generate-podcastindex-key.js && electron-builder --mac",
-        "dist:linux": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js linux && node scripts/generate-podcastindex-key.js && electron-builder --linux"
+        "dist:win": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js win32 && electron-builder --win",
+        "dist:mac": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js darwin && electron-builder --mac",
+        "dist:linux": "node scripts/fetch-platform-tools.js && node scripts/fetch-light-cli.js linux && electron-builder --linux"
     },
     "build": {
         "appId": "com.greghare.lightphonemanager",

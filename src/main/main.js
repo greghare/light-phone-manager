@@ -14,7 +14,7 @@ const mediaLib = require("./media");
 const ringtonesLib = require("./ringtones");
 const ffmpegLib = require("./ffmpeg");
 const lightLib = require("./light");
-const podcastindexLib = require("./podcastindex");
+const applePodcastsLib = require("./applepodcasts");
 
 const DEVICE_POLL_MS = 2500;
 
@@ -1078,11 +1078,11 @@ function registerIpc() {
     return lightLib.podcastsList(selector);
   });
 
-  ipcMain.handle("podcasts:searchAvailable", () => podcastindexLib.isConfigured());
+  ipcMain.handle("podcasts:searchAvailable", () => applePodcastsLib.isConfigured());
 
   ipcMain.handle("podcasts:search", async (_evt, term) => {
     if (!term || !term.trim()) return [];
-    return podcastindexLib.searchByTerm(term.trim());
+    return applePodcastsLib.searchByTerm(term.trim());
   });
 
   ipcMain.handle("podcasts:add", async (_evt, rssUrl) => {

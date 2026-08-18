@@ -1119,9 +1119,9 @@ function renderAboutView() {
       url: "https://github.com/rsms/inter",
     },
     {
-      name: "Podcast Index",
-      note: "Podcast search results on the Add Podcast screen are powered by the Podcast Index API. This product uses the Podcast Index but is not affiliated with or endorsed by Podcast Index. The API's terms are available at their site.",
-      url: "https://podcastindex.org",
+      name: "Apple Search API",
+      note: "Podcast search results on the Add Podcast screen are provided courtesy of iTunes, via Apple's Search API.",
+      url: "https://performance-partners.apple.com/search-api",
     },
   ];
 

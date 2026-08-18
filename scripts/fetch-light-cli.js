@@ -221,7 +221,15 @@ async function fetchOne(platformKey, hostPython) {
 }
 
 async function main() {
-  const arg = process.argv[2] || "all";
+  // No arg -> just the host platform (what a bare `npm run dist` needs to
+  // build locally). Pass "all" explicitly to prefetch every OS's bundle —
+  // that's what CI's dist:win/dist:mac/dist:linux scripts do implicitly by
+  // always passing their own platform, and what you'd want before e.g.
+  // committing resources for all three. Defaulting to "all" instead of the
+  // host here used to make plain `npm run dist` fetch macOS's build even on
+  // Windows, which fails: python-build-standalone's macOS tarball contains
+  // Unix symlinks that Windows' bundled tar can't create.
+  const arg = process.argv[2] || os.platform();
   const keys = arg === "all" ? Object.keys(TARGETS) : [arg];
   for (const k of keys) {
     if (!TARGETS[k]) {

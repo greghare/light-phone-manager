@@ -5,6 +5,5 @@ resources/platform-tools/*/
 resources/light-cli/win32/
 resources/light-cli/darwin/
 resources/light-cli/linux/
-src/main/podcastindex-credentials.generated.json
 *.log
 .DS_Store
