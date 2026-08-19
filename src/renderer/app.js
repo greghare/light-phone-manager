@@ -101,7 +101,7 @@ function avatar(r, size) {
 
 const state = {
   device: { status: "none", serial: null, model: null, androidVersion: null, freeBytes: null, totalBytes: null },
-  section: "tools", // "tools" | "media" | "install" | "settings" | "ringtones" | "podcasts" | "notes" | "about"
+  section: "tools", // "tools" | "media" | "install" | "settings" | "ringtones" | "podcasts" | "notes" | "lightos" | "about"
   repos: [],
   nav: "repos",
   category: "all",
@@ -162,6 +162,11 @@ const state = {
   noteSaving: false,
   noteBusy: {}, // id -> bool (deleting)
   noteContextMenu: null, // { x, y, noteId }
+
+  lightOsTools: [], // [{ id, title, installed }]
+  lightOsLoading: false,
+  selectedLightOsId: null,
+  lightOsBusy: {}, // id -> bool (installing/uninstalling)
 
   // null fields = not checked yet (status hasn't come back from the CLI).
   light: { installed: null, loggedIn: null, devices: [], selectedDeviceId: null, error: null },
@@ -304,9 +309,13 @@ function renderSidebar() {
       <span style="font-size:15px;font-weight:700;color:${state.section === "tools" && state.nav === "repos" ? "#fff" : "rgba(255,255,255,0.55)"};text-decoration:${state.section === "tools" && state.nav === "repos" ? "underline" : "none"}">Repos</span>
       <span style="font-size:12px;color:rgba(255,255,255,0.3)">${toolsBaseList().length}</span>
     </div>
-    <div data-action="selectNav" data-nav="installed" style="display:flex;align-items:center;justify-content:space-between;padding:6px 22px;cursor:pointer;margin-bottom:20px">
+    <div data-action="selectNav" data-nav="installed" style="display:flex;align-items:center;justify-content:space-between;padding:6px 22px;cursor:pointer">
       <span style="font-size:15px;font-weight:700;color:${state.section === "tools" && state.nav === "installed" ? "#fff" : "rgba(255,255,255,0.55)"};text-decoration:${state.section === "tools" && state.nav === "installed" ? "underline" : "none"}">Installed</span>
       <span style="font-size:12px;color:rgba(255,255,255,0.3)">${state.repos.filter((r) => r.installedVersion).length}</span>
+    </div>
+    <div data-action="openLightOs" style="display:flex;align-items:center;justify-content:space-between;padding:6px 22px;cursor:pointer;margin-bottom:20px">
+      <span style="font-size:15px;font-weight:700;color:${state.section === "lightos" ? "#fff" : "rgba(255,255,255,0.55)"};text-decoration:${state.section === "lightos" ? "underline" : "none"}">Light OS</span>
+      <span style="font-size:12px;color:rgba(255,255,255,0.3)">${state.lightOsTools.filter((t) => t.installed).length}</span>
     </div>
     ${categories
       .map(
@@ -1259,6 +1268,96 @@ function deleteIcon() {
   return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>`;
 }
 
+function renderLightOsRow(t) {
+  const dotColor = t.installed ? "#34c759" : "rgba(255,255,255,0.25)";
+  const rowBg = t.id === state.selectedLightOsId ? "rgba(255,255,255,0.08)" : "transparent";
+  return `
+  <div data-action="selectLightOsTool" data-id="${esc(t.id)}" style="display:flex;align-items:center;gap:12px;padding:11px 14px;margin:0 10px 2px;border-radius:12px;cursor:pointer;background:${rowBg}">
+    <div style="flex:1;min-width:0">
+      <div style="font-size:16px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(t.title)}</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:5px;flex-shrink:0">
+      <div style="width:6px;height:6px;border-radius:50%;background:${dotColor}"></div>
+      <span style="font-size:13px;color:#fff;font-weight:600">${t.installed ? "Installed" : "Not installed"}</span>
+    </div>
+  </div>`;
+}
+
+// Same login/device gating as renderPodcastsView — Light OS tools live on
+// the account's Light Phone the same way podcasts/notes do, over the same
+// `light` CLI, so listing or changing any of them needs the same Light
+// Account sign-in.
+function renderLightOsList() {
+  const light = state.light;
+  const list = state.lightOsTools;
+  let body;
+  if (light.installed === false) {
+    body = `<div style="font-size:13px;color:#f5a623;padding:8px 24px;line-height:1.6">The bundled Light CLI is missing or broken. Try reinstalling Light Phone Manager.</div>`;
+  } else if (light.loggedIn === null) {
+    body = `<div style="font-size:13px;color:rgba(255,255,255,0.4);padding:8px 24px">Checking your Light Account…</div>`;
+  } else if (!light.loggedIn) {
+    body = `<div style="font-size:13px;color:rgba(255,255,255,0.45);padding:8px 24px;line-height:1.6">Sign in to your Light Account in <span data-action="openSettings" style="color:#fff;cursor:pointer;text-decoration:underline">Settings</span> to manage Light OS tools.</div>`;
+  } else if (light.devices.length > 1 && !light.selectedDeviceId) {
+    body = `<div style="font-size:13px;color:#f5a623;padding:8px 24px;line-height:1.6">Multiple Light devices found on this account — choose one in <span data-action="openSettings" style="color:#fff;cursor:pointer;text-decoration:underline">Settings</span> before managing tools.</div>`;
+  } else if (state.lightOsLoading) {
+    body = `<div style="font-size:13px;color:rgba(255,255,255,0.4);padding:8px 24px">Loading…</div>`;
+  } else if (list.length === 0) {
+    body = `<div style="padding:40px 20px;text-align:center;font-size:13px;color:rgba(255,255,255,0.35)">No tools found</div>`;
+  } else {
+    body = list.map(renderLightOsRow).join("");
+  }
+
+  const canManage = light.loggedIn && (light.devices.length <= 1 || light.selectedDeviceId);
+  const showCount = canManage && !state.lightOsLoading && list.length > 0;
+
+  return `
+  <div style="width:350px;flex-shrink:0;display:flex;flex-direction:column;overflow-y:auto">
+    <div style="padding:22px 24px 14px;display:flex;align-items:baseline;gap:8px;flex-shrink:0">
+      <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">Light OS</div>
+      ${showCount ? `<div style="font-size:15px;font-weight:600;color:rgba(255,255,255,0.3)">${list.length}</div>` : ""}
+    </div>
+    ${body}
+  </div>`;
+}
+
+function renderLightOsDetail() {
+  const t = state.lightOsTools.find((x) => x.id === state.selectedLightOsId);
+  if (!t) {
+    return `
+    <div style="flex:1;overflow-y:auto;position:relative">
+      <div style="height:100%;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.3);font-size:14px">Select a tool to see details</div>
+    </div>`;
+  }
+  const busy = !!state.lightOsBusy[t.id];
+  return `
+  <div style="flex:1;overflow-y:auto;position:relative">
+    <div style="padding:22px 48px 60px;max-width:640px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px">
+        <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">${esc(t.title)}</div>
+        ${
+          t.installed && !busy
+            ? `<div data-action="uninstallLightOsTool" data-id="${esc(t.id)}" style="font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,120,110,0.8);cursor:pointer;white-space:nowrap;flex-shrink:0;margin-top:12px">UNINSTALL FROM PHONE</div>`
+            : ""
+        }
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:28px">
+        <div style="width:8px;height:8px;border-radius:50%;background:${t.installed ? "#34c759" : "rgba(255,255,255,0.25)"}"></div>
+        <span style="font-size:14px;color:rgba(255,255,255,0.6)">${t.installed ? "Installed on your Light Phone" : "Not installed"}</span>
+      </div>
+      ${
+        busy
+          ? `<div style="display:flex;align-items:center;gap:8px">
+              <div style="width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,0.2);border-top-color:#fff;animation:lp-spin 0.8s linear infinite"></div>
+              <span style="font-size:13px;color:rgba(255,255,255,0.6)">${t.installed ? "Removing" : "Installing"}…</span>
+            </div>`
+          : !t.installed
+          ? `<button data-action="installLightOsTool" data-id="${esc(t.id)}" style="background:#fff;color:#000;border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:600;cursor:pointer">Install</button>`
+          : ""
+      }
+    </div>
+  </div>`;
+}
+
 function renderPodcastRow(p) {
   const busy = state.podcastBusy[p.title];
   return `
@@ -1534,6 +1633,8 @@ function render() {
           ? renderPodcastsView()
           : state.section === "notes"
           ? renderNotesView()
+          : state.section === "lightos"
+          ? `${renderLightOsList()}${renderLightOsDetail()}`
           : state.section === "about"
           ? renderAboutView()
           : `${renderList()}${renderDetail()}`
@@ -1682,6 +1783,44 @@ const actions = {
   openNotes() {
     setState({ section: "notes" });
     refreshNotes();
+  },
+  openLightOs() {
+    setState({ section: "lightos" });
+    refreshLightOsTools();
+  },
+  selectLightOsTool(ds) {
+    setState({ selectedLightOsId: ds.id });
+  },
+  async installLightOsTool(ds) {
+    if (state.lightOsBusy[ds.id]) return;
+    setState({ lightOsBusy: { ...state.lightOsBusy, [ds.id]: true } });
+    try {
+      const lightOsTools = await window.api.lightOsInstall(ds.id);
+      setState({ lightOsTools, lightOsBusy: { ...state.lightOsBusy, [ds.id]: false } });
+    } catch (err) {
+      setState({ lightOsBusy: { ...state.lightOsBusy, [ds.id]: false } });
+      showToast(err.message || "Couldn't install that tool");
+    }
+  },
+  uninstallLightOsTool(ds) {
+    const tool = state.lightOsTools.find((t) => t.id === ds.id);
+    if (!tool) return;
+    openConfirm({
+      message: `Uninstall ${tool.title} from your Light Phone 3? This can't be undone.`,
+      confirmLabel: "Uninstall",
+      danger: true,
+      run: () => actions.performUninstallLightOsTool(ds),
+    });
+  },
+  async performUninstallLightOsTool(ds) {
+    setState({ lightOsBusy: { ...state.lightOsBusy, [ds.id]: true } });
+    try {
+      const lightOsTools = await window.api.lightOsUninstall(ds.id);
+      setState({ lightOsTools, lightOsBusy: { ...state.lightOsBusy, [ds.id]: false } });
+    } catch (err) {
+      setState({ lightOsBusy: { ...state.lightOsBusy, [ds.id]: false } });
+      showToast(err.message || "Couldn't uninstall that tool");
+    }
   },
   // Opens a draft that only exists in the renderer — nothing is created on
   // the account until Save is clicked (see NEW_NOTE_ID). Silently discards
@@ -2218,6 +2357,21 @@ async function refreshPodcasts({ silent = false } = {}) {
   }
 }
 
+async function refreshLightOsTools({ silent = false } = {}) {
+  const light = state.light;
+  const canManage = light.loggedIn && (light.devices.length <= 1 || light.selectedDeviceId);
+  if (!canManage) return;
+  if (!silent) setState({ lightOsLoading: true });
+  try {
+    const lightOsTools = await window.api.lightOsList();
+    setState({ lightOsTools });
+  } catch (err) {
+    if (!silent) showToast(err.message || "Couldn't load Light OS tools");
+  } finally {
+    if (!silent) setState({ lightOsLoading: false });
+  }
+}
+
 async function refreshNotes({ silent = false } = {}) {
   const light = state.light;
   const canManage = light.loggedIn && (light.devices.length <= 1 || light.selectedDeviceId);
@@ -2412,13 +2566,15 @@ document.addEventListener("dblclick", (e) => {
   });
   applyOsSettings(osSettings);
 
-  // Podcasts/notes only ever got fetched when their own sidebar item was
-  // clicked, which left the sidebar's counts next to them reading 0 (their
-  // initial state values) until that first visit. Load both silently in the
-  // background right away instead, same as the repo refresh below, so the
+  // Podcasts/notes/Light OS tools only ever got fetched when their own
+  // sidebar item was clicked, which left the sidebar's counts next to them
+  // reading 0 (their initial state values) until that first visit. Load all
+  // three silently in the background right away instead, same as the repo
+  // refresh below, so the
   // counts are right from the moment the app opens.
   refreshPodcasts({ silent: true });
   refreshNotes({ silent: true });
+  refreshLightOsTools({ silent: true });
 
   // repos:list only returns whatever releases were cached from the last
   // add/refresh — it never hits GitHub itself. Kick off a silent

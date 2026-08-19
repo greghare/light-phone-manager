@@ -1142,6 +1142,25 @@ function registerIpc() {
     send("toast", { message: "Note deleted" });
   });
 
+  ipcMain.handle("lightos:list", async () => {
+    const selector = lightDeviceSelector();
+    return lightLib.toolsList(selector);
+  });
+
+  ipcMain.handle("lightos:install", async (_evt, id) => {
+    const selector = lightDeviceSelector();
+    await lightLib.toolsInstall(id, selector);
+    send("toast", { message: "Tool installed" });
+    return lightLib.toolsList(selector);
+  });
+
+  ipcMain.handle("lightos:uninstall", async (_evt, id) => {
+    const selector = lightDeviceSelector();
+    await lightLib.toolsUninstall(id, selector);
+    send("toast", { message: "Tool removed" });
+    return lightLib.toolsList(selector);
+  });
+
   ipcMain.handle("window:minimize", () => mainWindow?.minimize());
   ipcMain.handle("window:toggleMaximize", () => {
     if (!mainWindow) return;
