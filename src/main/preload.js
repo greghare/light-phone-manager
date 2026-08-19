@@ -70,6 +70,10 @@ contextBridge.exposeInMainWorld("api", {
   notesUpdate: (noteId, { title, content }) => ipcRenderer.invoke("notes:update", { noteId, title, content }),
   notesRemove: (noteId) => ipcRenderer.invoke("notes:remove", noteId),
 
+  lightOsList: () => ipcRenderer.invoke("lightos:list"),
+  lightOsInstall: (id) => ipcRenderer.invoke("lightos:install", id),
+  lightOsUninstall: (id) => ipcRenderer.invoke("lightos:uninstall", id),
+
   windowMinimize: () => ipcRenderer.invoke("window:minimize"),
   windowToggleMaximize: () => ipcRenderer.invoke("window:toggleMaximize"),
   windowClose: () => ipcRenderer.invoke("window:close"),

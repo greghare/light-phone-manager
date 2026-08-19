@@ -196,6 +196,30 @@ function mapPodcasts(data) {
   return podcasts.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
 }
 
+// The CLI's own `tools list` only reports tools already installed on the
+// device — there's no "list everything available" command — so the full
+// catalog Light OS supports (from light_api's ToolName enum) is hardcoded
+// here to fill in "not installed" for whatever's missing from that list.
+// Titles are just the id capitalized; the CLI doesn't expose nicer display
+// names for tools that aren't installed yet.
+const TOOL_CATALOG = ["alarm", "album", "authenticator", "calculator", "calendar", "camera", "directions", "directory", "hotspot", "music", "notes", "podcasts", "timer", "weather"].map((id) => ({
+  id,
+  title: id.charAt(0).toUpperCase() + id.slice(1),
+}));
+
+// Same substring match the CLI itself uses to resolve a tool name against
+// the account's full catalog (see tools.py's _resolve_global_tool_id) —
+// matching against both an installed row's title and its namespace (a
+// reverse-DNS string like "com.light.podcasts") covers it either way.
+function matchesTool(catalogId, installedTool) {
+  const needle = catalogId.toLowerCase();
+  return (installedTool.title || "").toLowerCase().includes(needle) || (installedTool.namespace || "").toLowerCase().includes(needle);
+}
+
+function mapInstalledTools(data) {
+  return data.map((t) => ({ title: t.title || "", namespace: t.namespace || "" }));
+}
+
 function deviceArgs(selector) {
   if (selector && selector.deviceId) return ["--device-id", selector.deviceId];
   if (selector && selector.phoneNumber) return ["--phone-number", selector.phoneNumber];
@@ -347,6 +371,33 @@ async function notesDelete(noteId, selector) {
   await runNotesJson([...deviceArgs(selector), "delete", noteId]);
 }
 
+// Light OS "tools" here means the phone's own built-in apps (Alarm,
+// Calculator, Podcasts, etc.) that can be individually added to or removed
+// from a device — distinct from this app's own "Repos"/"Installed" (which
+// track sideloaded third-party APKs over adb). Returns the full catalog,
+// each entry flagged with whether it's currently installed on the account's
+// selected device.
+async function toolsList(selector) {
+  const data = await runJson([...deviceArgs(selector), "tools", "list"]);
+  const installed = mapInstalledTools(data);
+  return TOOL_CATALOG.map((tool) => ({
+    id: tool.id,
+    title: tool.title,
+    installed: installed.some((t) => matchesTool(tool.id, t)),
+  })).sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
+}
+
+async function toolsInstall(id, selector) {
+  await run([...deviceArgs(selector), "tools", "add", id]);
+}
+
+// `tools remove` asks `click.confirm("Remove {name}?")` on stdin before
+// doing anything — same as podcastsDelete above, answering "y" here just
+// relays the confirmation already shown in this app's own UI.
+async function toolsUninstall(id, selector) {
+  await run([...deviceArgs(selector), "tools", "remove", id], { stdin: "y\n" });
+}
+
 module.exports = {
   status,
   login,
@@ -360,4 +411,7 @@ module.exports = {
   notesCreate,
   notesUpdate,
   notesDelete,
+  toolsList,
+  toolsInstall,
+  toolsUninstall,
 };
