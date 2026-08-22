@@ -101,7 +101,7 @@ function avatar(r, size) {
 
 const state = {
   device: { status: "none", serial: null, model: null, androidVersion: null, freeBytes: null, totalBytes: null },
-  section: "tools", // "tools" | "media" | "install" | "settings" | "ringtones" | "podcasts" | "notes" | "lightos" | "about"
+  section: "tools", // "tools" | "media" | "install" | "settings" | "ringtones" | "podcasts" | "notes" | "lightos" | "marketplace" | "about"
   repos: [],
   nav: "repos",
   category: "all",
@@ -125,7 +125,15 @@ const state = {
   backupRunning: false,
   deviceRefreshing: false,
   deviceRebooting: false,
-  lightboxIndex: null,
+  // Generic full-screen photo/video viewer, shared by the Media galleries
+  // and the Marketplace screenshot gallery (and anywhere else that wants
+  // one) — only one can ever be open at a time, so one state field is
+  // enough. items: [{ url, name, kind }] ("image" | "video"); index: which
+  // one's showing. Populated by whichever opener action was clicked (see
+  // openMediaLightbox/openMarketplaceLightbox), not read from a specific
+  // gallery's own state, so the shared render/nav logic never needs to know
+  // where the images came from.
+  lightbox: null,
   confirmDialog: null, // { message, confirmLabel, danger }
   contextMenu: null, // { x, y, repoId }
   appLogs: null, // { repoId, lines: string[], loading, error }
@@ -167,6 +175,25 @@ const state = {
   lightOsLoading: false,
   selectedLightOsId: null,
   lightOsBusy: {}, // id -> bool (installing/uninstalling)
+
+  marketplaceApps: [], // from awesome-light's index.json, see src/main/marketplace.js
+  marketplaceLoaded: false,
+  marketplaceLoading: false,
+  marketplaceError: null,
+  marketplaceQuery: "",
+  marketplaceView: "grid", // "grid" | "list"
+  marketplaceCategory: "all",
+  marketplaceSort: "az", // "az" | "newest" | "updated"
+  selectedMarketplaceSlug: null,
+  marketplaceInstallBusy: {}, // slug -> bool
+  // Which custom dropdown (see renderDropdown) is currently open — "marketplaceSort" |
+  // "marketplaceCategory" | null. Only one can be open at a time.
+  openDropdown: null,
+  // Viewport coords (top/left, in px) for the currently open dropdown's
+  // panel, computed from the trigger button's own position at the moment
+  // it's opened — see actions.toggleDropdown for why this can't just be
+  // position:absolute off the button.
+  openDropdownRect: null,
 
   // null fields = not checked yet (status hasn't come back from the CLI).
   light: { installed: null, loggedIn: null, devices: [], selectedDeviceId: null, error: null },
@@ -302,8 +329,9 @@ function renderSidebar() {
   return `
   <div style="width:230px;flex-shrink:0;padding:20px 0;display:flex;flex-direction:column;gap:4px;overflow-y:auto">
     <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:rgba(255,255,255,0.3);padding:0 22px;margin-bottom:12px">Tools</div>
-    <div data-action="openAddRepo" style="display:flex;align-items:center;gap:8px;padding:6px 22px;font-size:15px;font-weight:700;color:#fff;cursor:pointer;margin-bottom:18px">
-      <span style="font-size:19px;line-height:1;font-weight:400">+</span> Add Repo
+    <div data-action="openMarketplace" style="display:flex;align-items:center;justify-content:space-between;padding:6px 22px;cursor:pointer;margin-bottom:18px">
+      <span style="font-size:15px;font-weight:700;color:${state.section === "marketplace" ? "#fff" : "rgba(255,255,255,0.55)"};text-decoration:${state.section === "marketplace" ? "underline" : "none"}">Marketplace</span>
+      ${state.marketplaceLoaded ? `<span style="font-size:12px;color:rgba(255,255,255,0.3)">${state.marketplaceApps.length}</span>` : ""}
     </div>
     <div data-action="selectNav" data-nav="repos" style="display:flex;align-items:center;justify-content:space-between;padding:6px 22px;cursor:pointer">
       <span style="font-size:15px;font-weight:700;color:${state.section === "tools" && state.nav === "repos" ? "#fff" : "rgba(255,255,255,0.55)"};text-decoration:${state.section === "tools" && state.nav === "repos" ? "underline" : "none"}">Repos</span>
@@ -384,6 +412,121 @@ function infoIcon() {
   </svg>`;
 }
 
+function gridIcon() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <rect x="3" y="3" width="7" height="7" rx="1.5"></rect>
+    <rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
+    <rect x="3" y="14" width="7" height="7" rx="1.5"></rect>
+    <rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
+  </svg>`;
+}
+
+function listIcon() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <line x1="8" y1="6" x2="21" y2="6"></line>
+    <line x1="8" y1="12" x2="21" y2="12"></line>
+    <line x1="8" y1="18" x2="21" y2="18"></line>
+    <line x1="3" y1="6" x2="3.01" y2="6"></line>
+    <line x1="3" y1="12" x2="3.01" y2="12"></line>
+    <line x1="3" y1="18" x2="3.01" y2="18"></line>
+  </svg>`;
+}
+
+function filterIcon() {
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+  </svg>`;
+}
+
+function backArrowIcon() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <line x1="19" y1="12" x2="5" y2="12"></line>
+    <polyline points="12 19 5 12 12 5"></polyline>
+  </svg>`;
+}
+
+function chevronDownIcon() {
+  return `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <polyline points="6 9 12 15 18 9"></polyline>
+  </svg>`;
+}
+
+// Custom-styled stand-in for a native <select> — used wherever a dropdown
+// needs to match the rest of the tool's own look instead of the OS's plain
+// system control. `options` is [{ value, label }]; `action` is the actions[]
+// entry invoked (with { value }) when one is picked. Only one of these can
+// be open at a time, tracked in state.openDropdown by `id`.
+//
+// The panel is positioned with viewport-fixed coordinates from
+// state.openDropdownRect (computed once, when it's opened — see
+// actions.toggleDropdown) rather than position:absolute off the button.
+// This dropdown can open from inside a narrow, independently-scrolling
+// pane (the Marketplace list view's 360px sidebar) — position:absolute
+// there gets clipped to that pane's own overflow:auto box the moment the
+// panel is wider or taller than it, which read as the dropdown vanishing
+// under the app's left sidebar. Fixed positioning escapes that entirely.
+// Canvas measureText, not just a fixed guess — used to size a dropdown
+// button to its widest option so the button doesn't grow/shrink as the
+// selected option changes (see dropdownButtonWidth). Reused across calls
+// rather than a fresh <canvas> each time; cheap enough to remeasure on
+// every render anyway given how few options each dropdown has.
+let measureCanvasCtx = null;
+function measureTextWidth(text, font) {
+  if (!measureCanvasCtx) measureCanvasCtx = document.createElement("canvas").getContext("2d");
+  measureCanvasCtx.font = font;
+  return measureCanvasCtx.measureText(text).width;
+}
+
+// Matches the button's own font/padding/icon layout below exactly (kept in
+// sync manually) so the measured width lines up with what actually gets
+// rendered — see renderDropdown.
+function dropdownButtonWidth(options, hasIcon) {
+  const font = "600 12px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const widestLabel = Math.max(...options.map((o) => measureTextWidth(o.label, font)));
+  const iconAndGap = hasIcon ? 14 + 6 : 0; // filterIcon is 14px, plus the row's 6px gap
+  const chevronAndGap = 11 + 6; // chevronDownIcon is 11px, plus its own 6px gap
+  const horizontalPadding = 20; // padding: 7px 10px → 10px each side
+  return Math.ceil(widestLabel + iconAndGap + chevronAndGap + horizontalPadding);
+}
+
+function renderDropdown({ id, action, value, options, minWidth, icon }) {
+  const open = state.openDropdown === id;
+  const current = options.find((o) => o.value === value);
+  const rect = open ? state.openDropdownRect : null;
+  const buttonWidth = dropdownButtonWidth(options, !!icon);
+  return `
+  <div style="position:relative;flex-shrink:0">
+    <button data-action="toggleDropdown" data-id="${esc(id)}" data-min-width="${minWidth || 170}" style="display:flex;align-items:center;gap:6px;width:${buttonWidth}px;background:${open ? "#fff" : "rgba(255,255,255,0.06)"};color:${open ? "#000" : "#fff"};border:1px solid ${open ? "#fff" : "rgba(255,255,255,0.15)"};border-radius:8px;padding:7px 10px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">
+      ${icon || ""}<span style="flex:1;min-width:0;text-align:left;overflow:hidden;text-overflow:ellipsis">${esc(current ? current.label : "")}</span>${chevronDownIcon()}
+    </button>
+    ${
+      open && rect
+        ? `<div data-action="closeDropdowns" style="position:fixed;inset:0;z-index:50"></div>
+           <div style="position:fixed;top:${rect.top}px;left:${rect.left}px;z-index:51;min-width:${minWidth || 170}px;max-width:280px;background:#181818;border:1px solid rgba(255,255,255,0.12);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,0.55);padding:6px;max-height:280px;overflow-y:auto">
+             ${options
+               .map(
+                 (o) => `
+             <div data-action="${esc(action)}" data-value="${esc(o.value)}" style="padding:8px 10px;border-radius:7px;font-size:13px;font-weight:600;color:${
+                   o.value === value ? "#fff" : "rgba(255,255,255,0.7)"
+                 };background:${o.value === value ? "rgba(255,255,255,0.08)" : "transparent"};cursor:pointer" onmouseover="this.style.background='rgba(255,255,255,0.08)'" onmouseout="this.style.background='${
+                   o.value === value ? "rgba(255,255,255,0.08)" : "transparent"
+                 }'">${esc(o.label)}</div>`
+               )
+               .join("")}
+           </div>`
+        : ""
+    }
+  </div>`;
+}
+
+function externalLinkIcon() {
+  return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+    <polyline points="15 3 21 3 21 9"></polyline>
+    <line x1="10" y1="14" x2="21" y2="3"></line>
+  </svg>`;
+}
+
 function renderList() {
   const list = deriveList();
   const items = list
@@ -412,10 +555,12 @@ function renderList() {
     .join("");
 
   return `
-  <div style="width:350px;flex-shrink:0;display:flex;flex-direction:column;overflow-y:auto">
-    <div style="padding:22px 24px 14px;display:flex;align-items:baseline;gap:8px;flex-shrink:0">
+  <div data-scroll-key="tools-${esc(state.nav)}" style="width:350px;flex-shrink:0;display:flex;flex-direction:column;overflow-y:auto">
+    <div style="padding:22px 24px 14px;display:flex;align-items:center;gap:8px;flex-shrink:0">
       <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">${state.nav === "installed" ? "Installed" : "Repos"}</div>
       <div style="font-size:15px;font-weight:600;color:rgba(255,255,255,0.3)">${list.length}</div>
+      <div style="flex:1"></div>
+      ${state.nav === "installed" ? "" : `<button data-action="openAddRepo" title="Add repo" style="background:#fff;color:#000;border:none;border-radius:8px;width:28px;height:28px;font-size:18px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;flex-shrink:0">+</button>`}
     </div>
     ${items}
     ${list.length === 0 ? `<div style="padding:40px 20px;text-align:center;font-size:13px;color:rgba(255,255,255,0.35)">No tools in this view</div>` : ""}
@@ -598,7 +743,7 @@ function renderNoteRow(n) {
 function renderNotesListPane() {
   const notes = state.notes;
   return `
-  <div style="width:350px;flex-shrink:0;display:flex;flex-direction:column;overflow-y:auto">
+  <div data-scroll-key="notes-list" style="width:350px;flex-shrink:0;display:flex;flex-direction:column;overflow-y:auto">
     <div style="padding:22px 24px 14px;display:flex;align-items:center;gap:8px;flex-shrink:0">
       <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">Notes</div>
       <div style="font-size:15px;font-weight:600;color:rgba(255,255,255,0.3)">${notes.length}</div>
@@ -721,13 +866,13 @@ function formatDuration(totalSeconds) {
 function renderMediaTile(p, i, kind) {
   if (kind === "video") {
     return `
-    <div data-action="openLightbox" data-index="${i}" style="position:relative;aspect-ratio:1;overflow:hidden;cursor:pointer;background:#111">
+    <div data-action="openMediaLightbox" data-index="${i}" style="position:relative;aspect-ratio:1;overflow:hidden;cursor:pointer;background:#111">
       <video data-video-tile src="${esc(p.url)}" muted preload="metadata" draggable="false" style="width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;-webkit-user-drag:none"></video>
       <div data-duration-label style="position:absolute;left:0;right:0;bottom:6px;text-align:center;font-size:11px;font-weight:600;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.9);pointer-events:none"></div>
     </div>`;
   }
   return `
-  <div data-action="openLightbox" data-index="${i}" style="aspect-ratio:1;overflow:hidden;cursor:pointer;background:#111">
+  <div data-action="openMediaLightbox" data-index="${i}" style="aspect-ratio:1;overflow:hidden;cursor:pointer;background:#111">
     ${
       p.hasThumb
         ? `<img src="${esc(p.thumbUrl)}" loading="lazy" draggable="false" style="width:100%;height:100%;object-fit:cover;display:block;-webkit-user-drag:none">`
@@ -796,26 +941,31 @@ function renderMediaView() {
       </div>
     </div>
     ${body}
-    ${renderLightbox()}
   </div>`;
 }
 
+// Generic — reads only state.lightbox, not any particular gallery's own
+// state, so it works the same for the Media views and the Marketplace
+// screenshot gallery (see openMediaLightbox/openMarketplaceLightbox). Called
+// once from the shared overlay list in render(), not per-view, so it stays
+// on screen (and keyboard nav keeps working) across whatever's underneath.
 function renderLightbox() {
-  if (state.lightboxIndex == null) return "";
-  const items = currentMediaItems();
-  const item = items[state.lightboxIndex];
+  const lb = state.lightbox;
+  if (!lb) return "";
+  const item = lb.items[lb.index];
   if (!item) return "";
-  const isVideo = currentMediaType().kind === "video";
+  const isVideo = item.kind === "video";
+  const border = item.bordered ? "border:1px solid rgba(255,255,255,0.5);" : "";
   const mediaEl = isVideo
-    ? `<video data-lightbox-img data-action="lightboxNoop" src="${esc(item.url)}" controls autoplay style="max-width:88vw;max-height:80vh;background:#000;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,0.6)"></video>`
-    : `<img data-lightbox-img data-action="lightboxNoop" src="${esc(item.url)}" style="max-width:88vw;max-height:80vh;object-fit:contain;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,0.6)">`;
+    ? `<video data-lightbox-img data-action="lightboxNoop" src="${esc(item.url)}" controls autoplay style="max-width:88vw;max-height:80vh;background:#000;${border}border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,0.6)"></video>`
+    : `<img data-lightbox-img data-action="lightboxNoop" src="${esc(item.url)}" style="max-width:88vw;max-height:80vh;object-fit:contain;${border}border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,0.6)">`;
   return `
   <div data-lightbox data-action="closeLightbox" style="position:fixed;inset:0;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;z-index:30">
     ${mediaEl}
     <button data-action="closeLightbox" title="Close" style="position:absolute;top:20px;right:24px;background:transparent;border:none;color:rgba(255,255,255,0.7);font-size:20px;cursor:pointer;line-height:1;padding:6px">&#10005;</button>
-    ${items.length > 1 ? `<button data-action="lightboxPrev" title="Previous" style="position:absolute;left:20px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:rgba(255,255,255,0.7);font-size:28px;cursor:pointer;padding:10px">&#8249;</button>` : ""}
-    ${items.length > 1 ? `<button data-action="lightboxNext" title="Next" style="position:absolute;right:20px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:rgba(255,255,255,0.7);font-size:28px;cursor:pointer;padding:10px">&#8250;</button>` : ""}
-    ${!isVideo ? `<div data-lightbox-caption data-action="lightboxNoop" style="position:absolute;bottom:22px;left:50%;transform:translateX(-50%);font-size:12px;color:rgba(255,255,255,0.55)">${esc(item.name)}</div>` : ""}
+    ${lb.items.length > 1 ? `<button data-action="lightboxPrev" title="Previous" style="position:absolute;left:20px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:rgba(255,255,255,0.7);font-size:28px;cursor:pointer;padding:10px">&#8249;</button>` : ""}
+    ${lb.items.length > 1 ? `<button data-action="lightboxNext" title="Next" style="position:absolute;right:20px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:rgba(255,255,255,0.7);font-size:28px;cursor:pointer;padding:10px">&#8250;</button>` : ""}
+    ${!isVideo && item.name ? `<div data-lightbox-caption data-action="lightboxNoop" style="position:absolute;bottom:22px;left:50%;transform:translateX(-50%);font-size:12px;color:rgba(255,255,255,0.55)">${esc(item.name)}</div>` : ""}
   </div>`;
 }
 
@@ -842,15 +992,16 @@ function patchNoteSaveButton() {
 }
 
 function patchLightboxImage() {
-  if (currentMediaType().kind === "video") return false;
+  const lb = state.lightbox;
+  if (!lb) return false;
+  const item = lb.items[lb.index];
+  if (!item || item.kind === "video") return false;
   const overlay = document.querySelector("[data-lightbox]");
   if (!overlay) return false;
-  const photo = currentMediaItems()[state.lightboxIndex];
-  if (!photo) return false;
   const img = overlay.querySelector("[data-lightbox-img]");
   const caption = overlay.querySelector("[data-lightbox-caption]");
-  if (img) img.src = photo.url;
-  if (caption) caption.textContent = photo.name;
+  if (img) img.src = item.url;
+  if (caption) caption.textContent = item.name || "";
   return true;
 }
 
@@ -1143,8 +1294,9 @@ function renderAboutView() {
       <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:20px 22px;margin-bottom:8px">
         <div style="font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase;margin-bottom:8px">Special thanks</div>
         <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:6px">Alexis Garado</div>
-        <div style="font-size:13px;color:rgba(255,255,255,0.55);line-height:1.6;margin-bottom:8px">Author of the Light API/CLI/TUI, the unofficial toolkit this tool relies on for all Podcast, Music, Note, and official Light tool management on your Light Account.</div>
+        <div style="font-size:13px;color:rgba(255,255,255,0.55);line-height:1.6;margin-bottom:8px">Author of the Light API/CLI/TUI, the unofficial toolkit this tool relies on for all Podcast, Music, Note, and official Light tool management on your Light Account. Also for the idea of the Marketplace and providing the backend datasource via Awesome Light.</div>
         <div style="font-size:13px"><span data-action="openRepoUrl" data-url="https://github.com/garado/light" style="color:#fff;cursor:pointer;text-decoration:underline">github.com/garado/light</span></div>
+        <div style="font-size:13px"><span data-action="openRepoUrl" data-url="https://github.com/garado/awesome-light" style="color:#fff;cursor:pointer;text-decoration:underline">github.com/garado/awesome-light</span></div>
       </div>
 
       <div style="font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase;margin:28px 0 4px">Also built with</div>
@@ -1311,7 +1463,7 @@ function renderLightOsList() {
   const showCount = canManage && !state.lightOsLoading && list.length > 0;
 
   return `
-  <div style="width:350px;flex-shrink:0;display:flex;flex-direction:column;overflow-y:auto">
+  <div data-scroll-key="lightos-list" style="width:350px;flex-shrink:0;display:flex;flex-direction:column;overflow-y:auto">
     <div style="padding:22px 24px 14px;display:flex;align-items:baseline;gap:8px;flex-shrink:0">
       <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em">Light OS</div>
       ${showCount ? `<div style="font-size:15px;font-weight:600;color:rgba(255,255,255,0.3)">${list.length}</div>` : ""}
@@ -1356,6 +1508,295 @@ function renderLightOsDetail() {
       }
     </div>
   </div>`;
+}
+
+// Same owner/repo normalization github.js's parseRepoUrl does on the main
+// side — duplicated here (client-side only, never used for the actual add)
+// just to recognize when a Marketplace listing's repo matches something
+// already tracked, so Install can skip straight to installing instead of
+// erroring with "already tracked".
+function parseGithubOwnerRepo(url) {
+  if (!url) return null;
+  const s = url
+    .trim()
+    .replace(/^git\+/, "")
+    .replace(/\.git$/, "")
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/^github\.com\//, "")
+    .replace(/^\/+|\/+$/g, "");
+  const parts = s.split("/").filter(Boolean);
+  if (parts.length < 2) return null;
+  return `${parts[0]}/${parts[1]}`.toLowerCase();
+}
+
+function findTrackedRepoByRepoUrl(url) {
+  const target = parseGithubOwnerRepo(url);
+  if (!target) return null;
+  return state.repos.find((r) => !r.sideloaded && r.repoUrl && parseGithubOwnerRepo(r.repoUrl) === target) || null;
+}
+
+function marketplaceCategories() {
+  return Array.from(new Set(state.marketplaceApps.map((a) => a.category).filter(Boolean))).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
+
+function filteredMarketplaceApps() {
+  const q = state.marketplaceQuery.trim().toLowerCase();
+  const list = state.marketplaceApps.filter((a) => {
+    if (state.marketplaceCategory !== "all" && a.category !== state.marketplaceCategory) return false;
+    if (!q) return true;
+    return (
+      a.title.toLowerCase().includes(q) ||
+      a.author.toLowerCase().includes(q) ||
+      a.description.toLowerCase().includes(q) ||
+      a.category.toLowerCase().includes(q)
+    );
+  });
+  return list.sort((a, b) => {
+    if (state.marketplaceSort === "newest") return (b.dateAdded || "").localeCompare(a.dateAdded || "");
+    if (state.marketplaceSort === "updated") return (b.latestRelease.date || "").localeCompare(a.latestRelease.date || "");
+    return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+  });
+}
+
+function marketplaceViewToggle() {
+  const btn = (view, icon, title) => `
+    <button data-action="setMarketplaceView" data-view="${view}" title="${title}" style="display:flex;align-items:center;justify-content:center;width:28px;height:26px;border-radius:6px;border:none;cursor:pointer;background:${state.marketplaceView === view ? "#fff" : "transparent"};color:${state.marketplaceView === view ? "#000" : "rgba(255,255,255,0.5)"}">${icon}</button>`;
+  return `
+  <div style="display:flex;align-items:center;gap:2px;background:rgba(255,255,255,0.06);border-radius:8px;padding:2px;flex-shrink:0">
+    ${btn("grid", gridIcon(), "Grid view")}
+    ${btn("list", listIcon(), "List view")}
+  </div>`;
+}
+
+function renderMarketplaceControls() {
+  const cats = marketplaceCategories();
+  const categoryOptions = [{ value: "all", label: "All categories" }, ...cats.map((c) => ({ value: c, label: c }))];
+  const sortOptions = [
+    { value: "az", label: "A–Z" },
+    { value: "newest", label: "Newest" },
+    { value: "updated", label: "Last updated" },
+  ];
+  return `
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+    <input data-bind="marketplaceQuery" data-role="marketplaceSearchInput" value="${esc(state.marketplaceQuery)}" placeholder="Search Marketplace…" style="flex:1;min-width:160px;background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,0.2);color:#fff;font-size:15px;padding:6px 0;outline:none">
+
+    ${renderDropdown({ id: "marketplaceCategory", action: "setMarketplaceCategory", value: state.marketplaceCategory, options: categoryOptions, minWidth: 190, icon: filterIcon() })}
+    ${renderDropdown({ id: "marketplaceSort", action: "setMarketplaceSort", value: state.marketplaceSort, options: sortOptions, minWidth: 150 })}
+    ${marketplaceViewToggle()}
+  </div>`;
+}
+
+// Floor height for the no-screenshot placeholder — just keeps it from
+// collapsing to nothing on a row where every other card is also short (or
+// also a placeholder). Whenever a row has a taller screenshot in it, the
+// placeholder's flex:1 (below) fills the rest on its own — see the comment
+// there for how that lines its bottom edge up with its row-mates.
+const MARKETPLACE_THUMB_HEIGHT = 160;
+
+function renderMarketplaceGridCard(a) {
+  const img = a.images[0];
+  return `
+  <div data-action="selectMarketplaceApp" data-slug="${esc(a.slug)}" style="cursor:pointer;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);display:flex;flex-direction:column">
+    <div style="width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.5)${img ? "" : ";flex:1;display:flex;align-items:center;justify-content:center;min-height:" + MARKETPLACE_THUMB_HEIGHT + "px"}">
+      ${
+        img
+          ? `<img src="${esc(img)}" loading="lazy" style="width:100%;height:auto;display:block">`
+          : `<div style="color:rgba(255,255,255,0.25);font-size:12px">No preview</div>`
+      }
+    </div>
+    <div style="padding:12px 14px;display:flex;align-items:center;gap:10px;min-width:0;margin-top:auto">
+      ${avatar({ name: a.title }, 30)}
+      <div style="min-width:0;flex:1">
+        <div style="font-size:14px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.title)}</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.45);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.author || "Unknown")}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderMarketplaceListRow(a) {
+  const rowBg = a.slug === state.selectedMarketplaceSlug ? "rgba(255,255,255,0.08)" : "transparent";
+  return `
+  <div data-action="selectMarketplaceApp" data-slug="${esc(a.slug)}" style="display:flex;align-items:center;gap:12px;padding:11px 14px;margin:0 10px 2px;border-radius:12px;cursor:pointer;background:${rowBg}">
+    ${avatar({ name: a.title }, 36)}
+    <div style="flex:1;min-width:0">
+      <div style="font-size:15px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.title)}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px">${esc(a.author || "Unknown")}${a.category ? ` · ${esc(a.category)}` : ""}</div>
+    </div>
+  </div>`;
+}
+
+// Shared by the initial render and patchMarketplaceResults (the live-typing
+// path — see the `input` listener) so both stay in sync with exactly one
+// implementation of "what the current filters/sort/view produce".
+function renderMarketplaceResultsBody(list) {
+  if (state.marketplaceLoading) return `<div style="font-size:13px;color:rgba(255,255,255,0.4);padding:12px 24px">Loading…</div>`;
+  if (state.marketplaceError) return `<div style="font-size:13px;color:#f5a623;padding:12px 24px;line-height:1.6">${esc(state.marketplaceError)}</div>`;
+  if (list.length === 0) return `<div style="padding:40px 20px;text-align:center;font-size:13px;color:rgba(255,255,255,0.35)">No tools found</div>`;
+  return state.marketplaceView === "grid"
+    ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px">${list.map(renderMarketplaceGridCard).join("")}</div>`
+    : list.map(renderMarketplaceListRow).join("");
+}
+
+function patchMarketplaceResults() {
+  const el = document.querySelector('[data-role="marketplaceResults"]');
+  if (!el) return false;
+  el.innerHTML = renderMarketplaceResultsBody(filteredMarketplaceApps());
+  return true;
+}
+
+function renderMarketplaceGridPane() {
+  const list = filteredMarketplaceApps();
+  return `
+  <div style="flex:1;overflow-y:auto">
+    <div style="padding:22px 24px 8px">
+      <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em;margin-bottom:14px">Marketplace</div>
+      ${renderMarketplaceControls()}
+    </div>
+    <div data-role="marketplaceResults" style="padding:0 24px 60px">${renderMarketplaceResultsBody(list)}</div>
+  </div>`;
+}
+
+function renderMarketplaceListPane() {
+  const list = filteredMarketplaceApps();
+  return `
+  <div data-scroll-key="marketplace-list" style="width:360px;flex-shrink:0;display:flex;flex-direction:column;overflow-y:auto">
+    <div style="padding:22px 24px 8px;flex-shrink:0">
+      <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em;margin-bottom:14px">Marketplace</div>
+      ${renderMarketplaceControls()}
+    </div>
+    <div data-role="marketplaceResults">${renderMarketplaceResultsBody(list)}</div>
+  </div>`;
+}
+
+function marketplaceDetailField(label, valueHtml) {
+  return `
+  <div>
+    <div style="font-size:11px;font-weight:600;letter-spacing:0.05em;color:rgba(255,255,255,0.35);text-transform:uppercase;margin-bottom:4px">${esc(label)}</div>
+    <div style="font-size:14px;color:rgba(255,255,255,0.85)">${valueHtml}</div>
+  </div>`;
+}
+
+function renderMarketplaceDetail({ standalone }) {
+  const a = state.marketplaceApps.find((x) => x.slug === state.selectedMarketplaceSlug);
+  if (!a) {
+    return `
+    <div style="flex:1;overflow-y:auto;position:relative">
+      <div style="height:100%;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.3);font-size:14px">Select a tool to see details</div>
+    </div>`;
+  }
+
+  const trackedRepo = findTrackedRepoByRepoUrl(a.repo);
+  const installed = !!(trackedRepo && trackedRepo.installedVersion);
+  const busy = !!state.marketplaceInstallBusy[a.slug] || !!(trackedRepo && state.activeRepoId === trackedRepo.id);
+  const notConnected = state.device.status !== "connected";
+  // "Companion Tools" listings are apps that pair with something else (an
+  // external server, a browser extension, etc.) rather than something that
+  // installs onto the phone itself — there's nothing for Install to do here.
+  const isCompanionTool = a.category.trim().toLowerCase() === "companion tools";
+  const installDisabled = busy || installed || !a.repo || notConnected;
+  const installLabel = busy ? "Installing…" : installed ? "Installed" : "Install";
+  const badgeLabels = { light_sdk: "Light SDK", editor_pick: "Editor's Pick" };
+
+  return `
+  <div style="flex:1;overflow-y:auto;position:relative">
+    <div style="padding:22px 48px 0">
+      ${
+        standalone
+          ? `<div data-action="backToMarketplaceGrid" style="display:flex;align-items:center;gap:6px;color:rgba(255,255,255,0.5);font-size:13px;font-weight:600;cursor:pointer;margin-bottom:18px;width:fit-content">${backArrowIcon()} Back to Marketplace</div>`
+          : ""
+      }
+      <div style="max-width:760px">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:10px">
+          <div style="min-width:0">
+            <div style="font-size:32px;font-weight:500;color:#fff;letter-spacing:-0.01em;line-height:1.15">${esc(a.title)}</div>
+            <div style="font-size:13px;color:rgba(255,255,255,0.45);margin-top:5px">
+              ${
+                a.authorUrl
+                  ? `<span data-action="openRepoUrl" data-url="${esc(a.authorUrl)}" style="color:rgba(255,255,255,0.7);cursor:pointer;text-decoration:underline">${esc(a.author || "Unknown")}</span>`
+                  : esc(a.author || "Unknown")
+              }${a.category ? ` · ${esc(a.category)}` : ""}
+            </div>
+          </div>
+          ${
+            isCompanionTool
+              ? ""
+              : `<button data-action="installMarketplaceApp" data-slug="${esc(a.slug)}" ${installDisabled ? "disabled" : ""} style="flex-shrink:0;background:${installDisabled ? "rgba(255,255,255,0.1)" : "#fff"};color:${installDisabled ? "rgba(255,255,255,0.4)" : "#000"};border:none;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:600;cursor:${installDisabled ? "default" : "pointer"};white-space:nowrap">${installLabel}</button>`
+          }
+        </div>
+        ${
+          a.badges.length > 0
+            ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">${a.badges
+                .map((b) => `<span style="font-size:11px;font-weight:600;color:rgba(255,255,255,0.6);background:rgba(255,255,255,0.08);border-radius:6px;padding:3px 8px">${esc(badgeLabels[b] || b)}</span>`)
+                .join("")}</div>`
+            : ""
+        }
+      </div>
+    </div>
+    ${
+      a.images.length > 0
+        ? // The horizontal scrollbar of an overflow-x:auto box always spans
+          // that box's own full width, padding included — so the 48px inset
+          // matching the rest of the page can't just be padding-left on this
+          // same div, or the scrollbar (and the scrollable range with it)
+          // starts 48px left of where the first image actually is. Putting
+          // the left inset on this non-scrolling wrapper instead keeps the
+          // scrolling div's own left edge flush with the first image.
+          //
+          // No matching padding-right on the scrolling div, deliberately —
+          // trailing padding counts toward its scrollable width the same as
+          // any image would, so a fixed 48px there made a row that already
+          // fit its screenshots (with room to spare) overflow by just that
+          // padding and grow a scrollbar for content that was never actually
+          // cut off. Whatever space is left over after the last image is
+          // real, unpadded slack instead, so the scrollbar only ever shows
+          // up when an image genuinely doesn't fit.
+          `<div style="padding-left:48px">
+            <div style="display:flex;gap:10px;overflow-x:auto;padding:16px 0 6px">
+              ${a.images
+                .map(
+                  (img, i) =>
+                    `<img data-action="openMarketplaceLightbox" data-slug="${esc(a.slug)}" data-index="${i}" src="${esc(img)}" style="height:220px;width:auto;display:block;border:1px solid rgba(255,255,255,0.5);flex-shrink:0;cursor:pointer">`
+                )
+                .join("")}
+            </div>
+          </div>`
+        : ""
+    }
+    <div style="padding:20px 48px 60px;max-width:760px">
+      <div style="font-size:14px;color:rgba(255,255,255,0.65);line-height:1.6;white-space:pre-line;margin-bottom:20px">${esc(a.content || a.description)}</div>
+      ${
+        installed && trackedRepo
+          ? `<div data-action="selectRepo" data-id="${esc(trackedRepo.id)}" style="font-size:12px;color:rgba(255,255,255,0.4);cursor:pointer;text-decoration:underline;margin-bottom:24px;display:inline-block">View in Installed →</div>`
+          : notConnected
+          ? `<div style="font-size:12px;color:#f5a623;margin-bottom:24px">Connect your Light Phone 3 to install.</div>`
+          : ""
+      }
+      <div style="display:flex;flex-direction:column;gap:16px">
+        ${a.repo ? marketplaceDetailField("Source", `<span data-action="openRepoUrl" data-url="${esc(a.repo)}" style="color:#fff;cursor:pointer;text-decoration:underline;overflow-wrap:anywhere">${esc(a.repo)}</span>`) : ""}
+        ${
+          a.latestRelease.version
+            ? marketplaceDetailField(
+                "Latest release",
+                `${a.latestRelease.url ? `<span data-action="openRepoUrl" data-url="${esc(a.latestRelease.url)}" style="color:#fff;cursor:pointer;text-decoration:underline">${esc(a.latestRelease.version)}</span>` : esc(a.latestRelease.version)}${
+                  a.latestRelease.date ? ` · ${esc(formatNoteDate(a.latestRelease.date))}` : ""
+                }`
+              )
+            : ""
+        }
+        ${a.dateAdded ? marketplaceDetailField("Added to Marketplace", esc(formatNoteDate(a.dateAdded))) : ""}
+        ${a.permalink ? marketplaceDetailField("Listing", `<span data-action="openRepoUrl" data-url="${esc(a.permalink)}" style="color:#fff;cursor:pointer;text-decoration:underline">View on awesome-light ↗</span>`) : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderMarketplaceView() {
+  if (state.marketplaceView === "grid") {
+    return state.selectedMarketplaceSlug ? renderMarketplaceDetail({ standalone: true }) : renderMarketplaceGridPane();
+  }
+  return `${renderMarketplaceListPane()}${renderMarketplaceDetail({ standalone: false })}`;
 }
 
 function renderPodcastRow(p) {
@@ -1635,6 +2076,8 @@ function render() {
           ? renderNotesView()
           : state.section === "lightos"
           ? `${renderLightOsList()}${renderLightOsDetail()}`
+          : state.section === "marketplace"
+          ? renderMarketplaceView()
           : state.section === "about"
           ? renderAboutView()
           : `${renderList()}${renderDetail()}`
@@ -1646,6 +2089,7 @@ function render() {
       ${renderContextMenu()}
       ${renderNoteContextMenu()}
       ${renderAppLogsModal()}
+      ${renderLightbox()}
       ${renderToast()}
     </div>
   `;
@@ -1673,7 +2117,7 @@ const actions = {
     if (run) run();
   },
   selectMedia(ds) {
-    setState({ section: "media", mediaKey: ds.key, lightboxIndex: null });
+    setState({ section: "media", mediaKey: ds.key, lightbox: null });
   },
   openInstallView() {
     setState({ section: "install" });
@@ -1806,7 +2250,7 @@ const actions = {
     const tool = state.lightOsTools.find((t) => t.id === ds.id);
     if (!tool) return;
     openConfirm({
-      message: `Uninstall ${tool.title} from your Light Phone 3? This can't be undone.`,
+      message: `Uninstall ${tool.title} from your Light Phone 3? This can't be undone and its data will be lost — back up anything you want to keep first.`,
       confirmLabel: "Uninstall",
       danger: true,
       run: () => actions.performUninstallLightOsTool(ds),
@@ -1821,6 +2265,89 @@ const actions = {
       setState({ lightOsBusy: { ...state.lightOsBusy, [ds.id]: false } });
       showToast(err.message || "Couldn't uninstall that tool");
     }
+  },
+  openMarketplace() {
+    setState({ section: "marketplace" });
+    refreshMarketplace();
+  },
+  setMarketplaceView(ds) {
+    if (state.marketplaceView === ds.view) return;
+    // Switching views can leave a stale selection dangling in the mode
+    // that just got left (grid's standalone detail has no list to return
+    // to in list mode, and vice versa reads oddly) — grid starts fresh with
+    // nothing selected, while list always shows a detail pane next to the
+    // list itself, so it starts on whatever's first under the current
+    // search/filter/sort instead of sitting empty.
+    const firstSlug = ds.view === "list" ? (filteredMarketplaceApps()[0] || {}).slug || null : null;
+    setState({ marketplaceView: ds.view, selectedMarketplaceSlug: firstSlug });
+  },
+  toggleDropdown(ds, e) {
+    if (state.openDropdown === ds.id) {
+      setState({ openDropdown: null, openDropdownRect: null });
+      return;
+    }
+    const btn = e.target.closest('[data-action="toggleDropdown"]');
+    if (!btn) return;
+    // Computed once, here, rather than positioned via CSS off the button —
+    // see the comment on renderDropdown for why (this dropdown can open
+    // from inside a pane that clips position:absolute children).
+    const r = btn.getBoundingClientRect();
+    const minWidth = Number(btn.dataset.minWidth) || 170;
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - minWidth - 12));
+    setState({ openDropdown: ds.id, openDropdownRect: { top: r.bottom + 6, left } });
+  },
+  closeDropdowns() {
+    setState({ openDropdown: null, openDropdownRect: null });
+  },
+  setMarketplaceCategory(ds) {
+    setState({ marketplaceCategory: ds.value, openDropdown: null, openDropdownRect: null });
+  },
+  setMarketplaceSort(ds) {
+    setState({ marketplaceSort: ds.value, openDropdown: null, openDropdownRect: null });
+  },
+  selectMarketplaceApp(ds) {
+    setState({ selectedMarketplaceSlug: ds.slug });
+  },
+  backToMarketplaceGrid() {
+    setState({ selectedMarketplaceSlug: null });
+  },
+  // Reuses the exact same repos:add flow as the "Add Repo" modal (see
+  // submitAddRepo) — a Marketplace install is just that, aimed at a repo URL
+  // from the listing instead of one typed in by hand — and then chains
+  // straight into installLatest so "Install" here really does finish with
+  // the tool installed on the phone, not just tracked.
+  async installMarketplaceApp(ds) {
+    const app = state.marketplaceApps.find((a) => a.slug === ds.slug);
+    if (!app || state.marketplaceInstallBusy[ds.slug]) return;
+    if (app.category.trim().toLowerCase() === "companion tools") return; // no Install button for these — see renderMarketplaceDetail
+    if (!app.repo) {
+      showToast("This tool doesn't list a source repo to install from.");
+      return;
+    }
+    setState({ marketplaceInstallBusy: { ...state.marketplaceInstallBusy, [ds.slug]: true } });
+    let repo = findTrackedRepoByRepoUrl(app.repo);
+    try {
+      if (!repo) repo = await window.api.reposAdd(app.repo);
+    } catch (err) {
+      setState({ marketplaceInstallBusy: { ...state.marketplaceInstallBusy, [ds.slug]: false } });
+      showToast(err.message || "Couldn't add that tool's repo");
+      return;
+    }
+    // reposAdd's own "repos:changed" broadcast (see main.js) normally beats
+    // its invoke() reply back to the renderer, so state.repos usually
+    // already has this by now — but installLatest below looks the repo up
+    // by id in state.repos and silently no-ops if it's missing, so this
+    // merge guarantees that lookup succeeds even if that event is still in
+    // flight, rather than relying on the two staying in that order.
+    if (!state.repos.some((r) => r.id === repo.id)) {
+      setState({ repos: [...state.repos, repo] });
+    }
+    setState({ marketplaceInstallBusy: { ...state.marketplaceInstallBusy, [ds.slug]: false } });
+    if (repo.installedVersion) {
+      showToast(`${repo.name} is already installed`);
+      return;
+    }
+    await actions.installLatest({ id: repo.id });
   },
   // Opens a draft that only exists in the renderer — nothing is created on
   // the account until Save is clicked (see NEW_NOTE_ID). Silently discards
@@ -2107,7 +2634,7 @@ const actions = {
     const repo = state.repos.find((r) => r.id === ds.id);
     if (!repo) return;
     openConfirm({
-      message: `Uninstall ${repo.name} from your Light Phone 3? This can't be undone.`,
+      message: `Uninstall ${repo.name} from your Light Phone 3? This can't be undone and its data will be lost — back up anything you want to keep first.`,
       confirmLabel: "Uninstall",
       danger: true,
       run: () => actions.performUninstall(ds),
@@ -2283,23 +2810,34 @@ const actions = {
       setState({ backupRunning: false });
     }
   },
-  openLightbox(ds) {
-    setState({ lightboxIndex: Number(ds.index) });
+  openMediaLightbox(ds) {
+    const mediaType = currentMediaType();
+    const items = currentMediaItems().map((p) => ({ url: p.url, name: p.name, kind: mediaType.kind }));
+    setState({ lightbox: { items, index: Number(ds.index) } });
+  },
+  openMarketplaceLightbox(ds) {
+    const app = state.marketplaceApps.find((a) => a.slug === ds.slug);
+    if (!app || app.images.length === 0) return;
+    // bordered: true carries the same white border the screenshot thumbnails
+    // have (see renderMarketplaceGridCard/the detail gallery) into the
+    // enlarged view — see renderLightbox/patchLightboxImage.
+    const items = app.images.map((url, i) => ({ url, name: `${app.title} — screenshot ${i + 1}`, kind: "image", bordered: true }));
+    setState({ lightbox: { items, index: Number(ds.index) } });
   },
   closeLightbox() {
-    setState({ lightboxIndex: null });
+    setState({ lightbox: null });
   },
   lightboxNoop() {},
   lightboxPrev() {
-    const count = currentMediaItems().length;
-    if (state.lightboxIndex == null || count === 0) return;
-    state.lightboxIndex = (state.lightboxIndex - 1 + count) % count;
+    if (!state.lightbox || state.lightbox.items.length === 0) return;
+    const { items, index } = state.lightbox;
+    state.lightbox = { items, index: (index - 1 + items.length) % items.length };
     if (!patchLightboxImage()) render();
   },
   lightboxNext() {
-    const count = currentMediaItems().length;
-    if (state.lightboxIndex == null || count === 0) return;
-    state.lightboxIndex = (state.lightboxIndex + 1) % count;
+    if (!state.lightbox || state.lightbox.items.length === 0) return;
+    const { items, index } = state.lightbox;
+    state.lightbox = { items, index: (index + 1) % items.length };
     if (!patchLightboxImage()) render();
   },
 };
@@ -2372,6 +2910,23 @@ async function refreshLightOsTools({ silent = false } = {}) {
   }
 }
 
+// Unlike podcasts/notes/Light OS tools, this doesn't need a Light Account —
+// it's a third-party catalog fetched over plain HTTP (see
+// src/main/marketplace.js) — so there's no login gating here, just a normal
+// loading/error/data cycle. Fetched lazily on first visit rather than at
+// boot, since it's a network call to a server this app doesn't otherwise
+// depend on.
+async function refreshMarketplace() {
+  if (state.marketplaceLoaded || state.marketplaceLoading) return;
+  setState({ marketplaceLoading: true, marketplaceError: null });
+  try {
+    const marketplaceApps = await window.api.marketplaceList();
+    setState({ marketplaceApps, marketplaceLoaded: true, marketplaceLoading: false });
+  } catch (err) {
+    setState({ marketplaceLoading: false, marketplaceError: err.message || "Couldn't load the Marketplace listing" });
+  }
+}
+
 async function refreshNotes({ silent = false } = {}) {
   const light = state.light;
   const canManage = light.loggedIn && (light.devices.length <= 1 || light.selectedDeviceId);
@@ -2425,6 +2980,11 @@ document.addEventListener("click", (e) => {
   if (!el) return;
   const action = el.dataset.action;
   if (action === "submitOnEnter") return; // handled by keydown, not click
+  // A <select> with data-action fires that action on "change" (see the
+  // change listener below), not on the click that opens its options — firing
+  // it here too would setState()/re-render on that very click, tearing the
+  // <select> back down mid-open before the browser can show its dropdown.
+  if (el.tagName === "SELECT") return;
   const fn = actions[action];
   if (fn) fn(el.dataset, e);
 });
@@ -2453,6 +3013,11 @@ document.addEventListener("input", (e) => {
     // up whenever some unrelated event happens to trigger a full render —
     // patch just that one button imperatively instead.
     if (bind === "noteEditTitle" || bind === "noteEditContent") patchNoteSaveButton();
+    // Same reasoning as the note fields above — a full setState() here would
+    // tear down and recreate this very input on every keystroke (render()
+    // replaces the whole app innerHTML), which drops focus mid-typing.
+    // Patching just the results container leaves the input alone.
+    else if (bind === "marketplaceQuery") patchMarketplaceResults();
   }
 });
 
@@ -2479,12 +3044,12 @@ document.addEventListener("keydown", (e) => {
     // newline like normal, not trigger a save.
     else if (e.target.dataset.noteField === "title") actions.saveNote();
   }
-  if (state.lightboxIndex != null) {
+  if (state.lightbox) {
     if (e.key === "Escape") actions.closeLightbox();
     // Left/right are also the native seek shortcuts for a focused <video>'s
     // controls — don't fight them for videos; the on-screen ‹ › buttons
     // still work to move between clips.
-    else if (currentMediaType().kind !== "video") {
+    else if (state.lightbox.items[state.lightbox.index]?.kind !== "video") {
       if (e.key === "ArrowLeft") actions.lightboxPrev();
       else if (e.key === "ArrowRight") actions.lightboxNext();
     }
@@ -2529,6 +3094,24 @@ window.api.onAppLogsLine(({ repoId, line }) => {
   setState({ appLogs: { ...state.appLogs, lines: [...state.appLogs.lines, line], loading: false } });
 });
 window.api.onToast(({ message }) => showToast(message));
+// An lpm:// link (see processDeepLink in main.js) just finished adding/
+// installing a repo or following a podcast — jump to where it landed so
+// that's visible right away instead of wherever the app happened to be
+// sitting when the OS brought it to the front. state.repos itself is kept
+// current by the ordinary onReposChanged broadcast, not this — this only
+// ever changes what's showing.
+window.api.onDeepLinkNavigate((nav) => {
+  if (nav.section === "podcasts") actions.openPodcasts();
+  else if (nav.section === "marketplace") {
+    // install-repo links land here when the repo matched a Marketplace
+    // listing (see findMarketplaceSlugForRepo in main.js) — open straight to
+    // that listing's detail page rather than just the Marketplace tab.
+    // refreshMarketplace() is a no-op once already loaded, so this works
+    // whether or not the tab's been visited yet this session.
+    refreshMarketplace();
+    setState({ section: "marketplace", selectedMarketplaceSlug: nav.slug });
+  } else setState({ section: nav.section, nav: nav.nav || state.nav, category: "all", selectedId: nav.repoId || state.selectedId });
+});
 window.api.onWindowMaximizedChange((maximized) => setState({ windowMaximized: maximized }));
 window.api.onMediaChanged(({ key, items }) => setState({ media: { ...state.media, [key]: items } }));
 
