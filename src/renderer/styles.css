@@ -39,12 +39,37 @@ html, body { margin: 0; height: 100%; background: #000; }
 #app {
   width: 100vw;
   height: 100vh;
+  /* Left/right padding matches .resize-left/.resize-right's width below —
+     those invisible window-resize strips sit flush against the window edge
+     the whole height, so without this inset they'd overlap (and, being on
+     top, swallow mouse input for) the scrollbar of any pane whose own
+     right edge is the window edge, like a detail view's — the list panes
+     are narrower than the window so their scrollbar never collided. */
+  padding: 0 4px;
   overflow: hidden;
   background: #000;
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #fff;
   display: flex;
   flex-direction: column;
+}
+/* Text selection and element drag-out are disabled tool-wide by default —
+   this isn't a web page, and both read as bugs more than features in an
+   Electron app (selecting a repo name while trying to click it, an avatar
+   or screenshot thumbnail dragging out mid-click). Inputs/textareas opt
+   back into normal text selection (still need to select/copy what you've
+   typed), and the APK install drop zone's own dragover/drop handlers (see
+   wireInstallDropZone) are unaffected either way — those listen for files
+   dragged in from the OS, a different mechanism from an element's own
+   HTML5 drag-out that -webkit-user-drag controls. */
+#app, #app * {
+  -webkit-user-drag: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+#app input, #app textarea {
+  -webkit-user-select: text;
+  user-select: text;
 }
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-thumb { background: #fff; border-radius: 0; }

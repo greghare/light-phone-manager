@@ -74,6 +74,8 @@ contextBridge.exposeInMainWorld("api", {
   lightOsInstall: (id) => ipcRenderer.invoke("lightos:install", id),
   lightOsUninstall: (id) => ipcRenderer.invoke("lightos:uninstall", id),
 
+  marketplaceList: () => ipcRenderer.invoke("marketplace:list"),
+
   windowMinimize: () => ipcRenderer.invoke("window:minimize"),
   windowToggleMaximize: () => ipcRenderer.invoke("window:toggleMaximize"),
   windowClose: () => ipcRenderer.invoke("window:close"),
@@ -87,4 +89,5 @@ contextBridge.exposeInMainWorld("api", {
   onToast: (cb) => on("toast", cb),
   onWindowMaximizedChange: (cb) => on("window:maximized", cb),
   onMediaChanged: (cb) => on("media:changed", cb),
+  onDeepLinkNavigate: (cb) => on("deeplink:navigate", cb),
 });

@@ -37,6 +37,28 @@ Track community tool repos on GitHub, install and update them over USB with one 
   for new ones (via Apple's Search API) or add one directly by its RSS feed
   URL, and remove ones you no longer want.
 
+## Linking into the app (`lpm://`)
+
+Once installed, Light Phone Manager registers itself as the handler for
+`lpm://` links, so a web page (a tool's own site, a GitHub README, a
+directory like a Marketplace listing) can link straight into an action
+instead of sending someone to copy a URL in by hand. Clicking one brings the
+app to the front and runs it immediately:
+
+| Link | What it does |
+| --- | --- |
+| `lpm://add-repo?url=<github repo URL>` | Tracks the repo, same as "+ Add Repo". |
+| `lpm://install-repo?url=<github repo URL>` | Tracks the repo, then installs its latest release (needs a Light Phone 3 connected over USB). |
+| `lpm://add-podcast?url=<RSS feed URL>` | Follows the podcast on your Light Account, same as Add Podcast → RSS Feed. |
+
+`url` should be percent-encoded, e.g.:
+
+```html
+<a href="lpm://install-repo?url=https%3A%2F%2Fgithub.com%2Fauthor%2Ftool">
+  Install with Light Phone Manager
+</a>
+```
+
 ## Requirements
 
 - A Light Phone 3 (or any Android device) with **USB debugging** enabled
