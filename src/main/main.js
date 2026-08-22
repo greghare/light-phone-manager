@@ -15,6 +15,7 @@ const ringtonesLib = require("./ringtones");
 const ffmpegLib = require("./ffmpeg");
 const lightLib = require("./light");
 const applePodcastsLib = require("./applepodcasts");
+const marketplaceLib = require("./marketplace");
 
 const DEVICE_POLL_MS = 2500;
 
@@ -184,10 +185,25 @@ async function refreshOsSettings(serial) {
   }
 }
 
+// Set by processDeepLink when an install-repo link needs a device that
+// wasn't plugged in yet — { repoId, version, name } for the one install to
+// resume once a device connects, or null when there's nothing waiting. Only
+// tracks the latest such link; a second install-repo link clicked while
+// still waiting on a device replaces whatever the first one left pending.
+let pendingDeepLinkInstall = null;
+
 function setDeviceState(next) {
   const changed = JSON.stringify(next) !== JSON.stringify(deviceState);
+  const justConnected = next.status === "connected" && deviceState.status !== "connected";
   deviceState = next;
   if (changed) send("device:update", deviceState);
+  if (justConnected && pendingDeepLinkInstall) {
+    const { repoId, version, name } = pendingDeepLinkInstall;
+    pendingDeepLinkInstall = null;
+    performInstall(repoId, version).catch((err) => {
+      send("toast", { message: err.message || `Couldn't install ${name}` });
+    });
+  }
 }
 
 async function refreshInstalledVersions(serial) {
@@ -470,6 +486,11 @@ function createWindow() {
   mainWindow.webContents.on("did-finish-load", () => {
     send("device:update", deviceState);
     broadcastRepos();
+    if (pendingDeepLinkUrl) {
+      const url = pendingDeepLinkUrl;
+      pendingDeepLinkUrl = null;
+      processDeepLink(url);
+    }
   });
   mainWindow.on("maximize", () => send("window:maximized", true));
   mainWindow.on("unmaximize", () => send("window:maximized", false));
@@ -625,6 +646,251 @@ async function performInstall(repoId, version) {
   send("toast", { message: `${repo.appName || repo.name} installed ${version}` });
 }
 
+// Tracks a GitHub repo as a tool: parses the URL, fetches its metadata and
+// releases, and (if the latest release has an APK) probes it for the real
+// package id/app name/icon. Shared by the "repos:add" IPC handler (the
+// in-app "+ Add Repo" flow) and processDeepLink's add-repo/install-repo
+// actions (an lpm:// link from a web page) — one place either has to agree
+// with, rather than the deep link reimplementing repo-adding on its own.
+async function addRepo(rawUrl) {
+  const parsed = github.parseRepoUrl(rawUrl);
+  if (!parsed) throw new Error("Enter a GitHub repo URL like github.com/author/tool");
+  const { owner, repo } = parsed;
+
+  if (store.getRepos().some((r) => r.owner === owner && r.repo === repo)) {
+    throw new Error(`${owner}/${repo} is already tracked.`);
+  }
+
+  const [meta, releases] = await Promise.all([
+    github.fetchRepoMeta(owner, repo, githubToken()),
+    github.fetchReleases(owner, repo, githubToken()),
+  ]);
+  if (releases.length === 0) throw new Error(`${owner}/${repo} has no releases on GitHub.`);
+
+  const id = newId("repo");
+  let packageId = null;
+  let appName = null;
+  let icon = null;
+
+  const withApk = releases.find((r) => r.apkAsset);
+  if (withApk) {
+    const tmpDest = path.join(store.getCacheDir(), `_probe-${id}.apk`);
+    try {
+      await github.downloadAsset(withApk.apkAsset.url, tmpDest, githubToken());
+      const parsedApk = await apkLib.parseApk(tmpDest);
+      packageId = parsedApk.packageId;
+      appName = parsedApk.appName;
+      icon = parsedApk.icon;
+      if (parsedApk.versionName) withApk.trueVersion = parsedApk.versionName;
+      // Keep this first download cached under its real package id so
+      // installing it right after adding doesn't re-download.
+      if (packageId) {
+        const safePkg = packageId.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const safeVer = withApk.version.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const finalDir = path.join(store.getCacheDir(), safePkg);
+        fs.mkdirSync(finalDir, { recursive: true });
+        fs.renameSync(tmpDest, path.join(finalDir, `${safeVer}.apk`));
+      }
+    } catch (err) {
+      console.error("Failed to probe APK for package info:", err);
+    } finally {
+      fs.rm(tmpDest, { force: true }, () => {});
+    }
+  }
+
+  const niceName =
+    appName ||
+    repo
+      .replace(/[-_]/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  // If this package was already showing up as an "On Device"/sideloaded
+  // entry (no repo tracked for it yet), replace it in place instead of
+  // adding a second row for the same tool — reusing its id also means
+  // whatever's currently selected/showing that entry just updates rather
+  // than pointing at a row that no longer exists.
+  const existingByPackage = packageId ? store.getRepos().find((r) => r.packageId === packageId) : null;
+
+  const entry = {
+    id: existingByPackage ? existingByPackage.id : id,
+    owner,
+    repo,
+    name: niceName,
+    appName: niceName,
+    author: owner,
+    category: "Utility",
+    packageId,
+    icon,
+    description: meta.description || `Tracked from github.com/${owner}/${repo}.`,
+    repoUrl: `github.com/${owner}/${repo}`,
+    installedVersion: existingByPackage ? existingByPackage.installedVersion : null,
+    releases,
+    sideloaded: false,
+    busy: false,
+  };
+  store.upsertRepo(entry);
+  broadcastRepos();
+
+  if (deviceState.status === "connected" && packageId) {
+    refreshInstalledVersions(deviceState.serial).catch(() => {});
+  }
+  return entry;
+}
+
+// ---------- lpm:// deep links ----------
+//
+// Lets a web page link straight into this app to add/install a repo or
+// follow a podcast, instead of the user having to copy a URL in by hand —
+// e.g. <a href="lpm://install-repo?url=https://github.com/author/tool">.
+// Each action just calls the exact same internal functions the in-app "+
+// Add Repo"/"Add Podcast" flows already use — addRepo and performInstall
+// above, and lightLib.podcastsAdd — so a link can never do anything those
+// flows couldn't already do from inside the app.
+//
+//   lpm://add-repo?url=<github repo URL>       track it, like "+ Add Repo"
+//   lpm://install-repo?url=<github repo URL>   track it, then install its
+//                                               latest release (needs a
+//                                               Light Phone 3 connected)
+//   lpm://add-podcast?url=<RSS feed URL>       follow it, like "Add
+//                                               Podcast" → RSS Feed tab
+//
+// Registered as this app's handler for the "lpm" scheme below (see
+// setAsDefaultProtocolClient) and in package.json's build.protocols (what
+// actually gets an *installed* build registered with the OS as the handler
+// for lpm:// links) — once that's done, the OS launches/wakes this app and
+// hands the clicked link back one of three ways: "open-url" (macOS, whether
+// or not the app was already running), a command-line argument on a fresh
+// launch (process.argv — Windows/Linux, app wasn't running), or the
+// "second-instance" event (Windows/Linux, app was already running — this
+// app is single-instance, so the OS's second launch attempt immediately
+// hands off to the first and exits).
+
+// Matches a repo URL against the Marketplace catalog's own repo field, so an
+// install-repo deep link (see processDeepLink) can land on that listing's
+// detail page instead of the plain Repos tab. Compares parsed owner/repo
+// rather than raw strings so "github.com/x/y", "https://github.com/x/y.git",
+// etc. all match regardless of which form either side happens to be in.
+// Returns null (never throws) on any failure — a Marketplace fetch hiccup
+// here shouldn't break the install-repo link itself.
+async function findMarketplaceSlugForRepo(rawUrl) {
+  const parsed = github.parseRepoUrl(rawUrl);
+  if (!parsed) return null;
+  try {
+    const apps = await marketplaceLib.fetchApps();
+    const match = apps.find((a) => {
+      const appRepo = github.parseRepoUrl(a.repo);
+      return appRepo && appRepo.owner.toLowerCase() === parsed.owner.toLowerCase() && appRepo.repo.toLowerCase() === parsed.repo.toLowerCase();
+    });
+    return match ? match.slug : null;
+  } catch (err) {
+    console.error("Failed to match repo against Marketplace catalog:", err);
+    return null;
+  }
+}
+
+// Queues a link that arrived before the window exists yet or is still
+// loading — did-finish-load (see createWindow) flushes it once the
+// renderer's actually up to receive the deeplink:navigate/toast IPC below.
+let pendingDeepLinkUrl = null;
+
+function focusMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function handleDeepLink(rawUrl) {
+  focusMainWindow();
+  if (!mainWindow || mainWindow.webContents.isLoadingMainFrame()) {
+    pendingDeepLinkUrl = rawUrl;
+    return;
+  }
+  processDeepLink(rawUrl);
+}
+
+async function processDeepLink(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    console.error(`[deeplink] Not a valid URL: ${rawUrl}`);
+    return;
+  }
+  if (parsed.protocol !== "lpm:") return;
+
+  // A non-special scheme like "lpm" splits differently depending on whether
+  // the link used "//" after the colon: "lpm://add-repo?..." puts the
+  // action in `hostname`, but "lpm:add-repo?..." (no slashes — also valid,
+  // and easy to end up with in a hand-written href) puts it in `pathname`
+  // instead. Accept either.
+  const action = (parsed.hostname || parsed.pathname.replace(/^\/+/, "")).toLowerCase();
+  const target = (parsed.searchParams.get("url") || "").trim();
+
+  try {
+    if (action === "add-repo" || action === "install-repo") {
+      if (!target) throw new Error("This link is missing a repo URL.");
+      const parsedTarget = github.parseRepoUrl(target);
+      if (!parsedTarget) throw new Error("Enter a GitHub repo URL like github.com/author/tool");
+      // Reuse an already-tracked repo instead of going through addRepo
+      // (which throws "already tracked") — a link should still land the
+      // clicker on the right page even if this isn't the first time they've
+      // clicked it, or they'd already added the tool some other way.
+      let entry = store.getRepos().find((r) => r.owner === parsedTarget.owner && r.repo === parsedTarget.repo);
+      const alreadyTracked = !!entry;
+
+      if (action === "install-repo") {
+        // Land on the tool's page first, before anything that might need a
+        // device — a Marketplace detail page if this repo matches a listing
+        // there (what the link-clicker was just looking at) since that
+        // match only needs the catalog, not a tracked repo yet. Falls back
+        // to the Repos tab (once the repo's tracked below) if there's no
+        // Marketplace match.
+        const marketplaceSlug = await findMarketplaceSlugForRepo(target);
+        if (marketplaceSlug) send("deeplink:navigate", { section: "marketplace", slug: marketplaceSlug });
+
+        if (!entry) entry = await addRepo(target);
+        if (!marketplaceSlug) send("deeplink:navigate", { section: "tools", nav: "repos", repoId: entry.id });
+
+        const latest = entry.releases && entry.releases[0];
+        if (!latest) throw new Error(`${entry.name} has no releases to install.`);
+        // Nothing left to do once it's already at the latest release — no
+        // device needed just to look at a page for a tool that's current.
+        if (entry.installedVersion !== latest.version) {
+          if (deviceState.status === "connected") {
+            // performInstall sends its own "<name> installed <version>"
+            // toast on success — no separate "added" toast first, to avoid
+            // stacking two toasts for what's one action from the
+            // link-clicker's view.
+            await performInstall(entry.id, latest.version);
+          } else {
+            // No phone plugged in — don't fail the whole link click over
+            // it. The page just navigated to already shows a "Connect your
+            // Light Phone 3 to install" banner; remember to finish the
+            // install once one connects instead (see setDeviceState).
+            pendingDeepLinkInstall = { repoId: entry.id, version: latest.version, name: entry.name };
+            send("toast", { message: `Plug in your Light Phone 3 to install ${entry.name}` });
+          }
+        }
+      } else {
+        if (!entry) entry = await addRepo(target);
+        if (!alreadyTracked) send("toast", { message: `${entry.name} added` });
+        send("deeplink:navigate", { section: "tools", nav: "repos", repoId: entry.id });
+      }
+    } else if (action === "add-podcast") {
+      if (!target) throw new Error("This link is missing a podcast feed URL.");
+      const selector = lightDeviceSelector();
+      await lightLib.podcastsAdd(target, selector);
+      send("toast", { message: "Podcast added" });
+      send("deeplink:navigate", { section: "podcasts" });
+    } else {
+      throw new Error(`Unrecognized lpm:// link ("${action}").`);
+    }
+  } catch (err) {
+    send("toast", { message: err.message || "That link didn't work" });
+  }
+}
+
 // ---------- IPC ----------
 
 function registerIpc() {
@@ -692,90 +958,7 @@ function registerIpc() {
     return osSettings;
   });
 
-  ipcMain.handle("repos:add", async (_evt, rawUrl) => {
-    const parsed = github.parseRepoUrl(rawUrl);
-    if (!parsed) throw new Error("Enter a GitHub repo URL like github.com/author/tool");
-    const { owner, repo } = parsed;
-
-    if (store.getRepos().some((r) => r.owner === owner && r.repo === repo)) {
-      throw new Error(`${owner}/${repo} is already tracked.`);
-    }
-
-    const [meta, releases] = await Promise.all([
-      github.fetchRepoMeta(owner, repo, githubToken()),
-      github.fetchReleases(owner, repo, githubToken()),
-    ]);
-    if (releases.length === 0) throw new Error(`${owner}/${repo} has no releases on GitHub.`);
-
-    const id = newId("repo");
-    let packageId = null;
-    let appName = null;
-    let icon = null;
-
-    const withApk = releases.find((r) => r.apkAsset);
-    if (withApk) {
-      const tmpDest = path.join(store.getCacheDir(), `_probe-${id}.apk`);
-      try {
-        await github.downloadAsset(withApk.apkAsset.url, tmpDest, githubToken());
-        const parsedApk = await apkLib.parseApk(tmpDest);
-        packageId = parsedApk.packageId;
-        appName = parsedApk.appName;
-        icon = parsedApk.icon;
-        if (parsedApk.versionName) withApk.trueVersion = parsedApk.versionName;
-        // Keep this first download cached under its real package id so
-        // installing it right after adding doesn't re-download.
-        if (packageId) {
-          const safePkg = packageId.replace(/[^a-zA-Z0-9._-]/g, "_");
-          const safeVer = withApk.version.replace(/[^a-zA-Z0-9._-]/g, "_");
-          const finalDir = path.join(store.getCacheDir(), safePkg);
-          fs.mkdirSync(finalDir, { recursive: true });
-          fs.renameSync(tmpDest, path.join(finalDir, `${safeVer}.apk`));
-        }
-      } catch (err) {
-        console.error("Failed to probe APK for package info:", err);
-      } finally {
-        fs.rm(tmpDest, { force: true }, () => {});
-      }
-    }
-
-    const niceName =
-      appName ||
-      repo
-        .replace(/[-_]/g, " ")
-        .replace(/\b\w/g, (c) => c.toUpperCase());
-
-    // If this package was already showing up as an "On Device"/sideloaded
-    // entry (no repo tracked for it yet), replace it in place instead of
-    // adding a second row for the same tool — reusing its id also means
-    // whatever's currently selected/showing that entry just updates rather
-    // than pointing at a row that no longer exists.
-    const existingByPackage = packageId ? store.getRepos().find((r) => r.packageId === packageId) : null;
-
-    const entry = {
-      id: existingByPackage ? existingByPackage.id : id,
-      owner,
-      repo,
-      name: niceName,
-      appName: niceName,
-      author: owner,
-      category: "Utility",
-      packageId,
-      icon,
-      description: meta.description || `Tracked from github.com/${owner}/${repo}.`,
-      repoUrl: `github.com/${owner}/${repo}`,
-      installedVersion: existingByPackage ? existingByPackage.installedVersion : null,
-      releases,
-      sideloaded: false,
-      busy: false,
-    };
-    store.upsertRepo(entry);
-    broadcastRepos();
-
-    if (deviceState.status === "connected" && packageId) {
-      refreshInstalledVersions(deviceState.serial).catch(() => {});
-    }
-    return entry;
-  });
+  ipcMain.handle("repos:add", (_evt, rawUrl) => addRepo(rawUrl));
 
   ipcMain.handle("repos:remove", (_evt, id) => {
     const repo = store.getRepos().find((r) => r.id === id);
@@ -1142,6 +1325,27 @@ function registerIpc() {
     send("toast", { message: "Note deleted" });
   });
 
+  ipcMain.handle("lightos:list", async () => {
+    const selector = lightDeviceSelector();
+    return lightLib.toolsList(selector);
+  });
+
+  ipcMain.handle("lightos:install", async (_evt, id) => {
+    const selector = lightDeviceSelector();
+    await lightLib.toolsInstall(id, selector);
+    send("toast", { message: "Tool installed" });
+    return lightLib.toolsList(selector);
+  });
+
+  ipcMain.handle("lightos:uninstall", async (_evt, id) => {
+    const selector = lightDeviceSelector();
+    await lightLib.toolsUninstall(id, selector);
+    send("toast", { message: "Tool removed" });
+    return lightLib.toolsList(selector);
+  });
+
+  ipcMain.handle("marketplace:list", () => marketplaceLib.fetchApps());
+
   ipcMain.handle("window:minimize", () => mainWindow?.minimize());
   ipcMain.handle("window:toggleMaximize", () => {
     if (!mainWindow) return;
@@ -1154,15 +1358,44 @@ function registerIpc() {
 
 // ---------- lifecycle ----------
 
+// Claims the "lpm" scheme as this app's own — see the deep-link block above
+// for what happens once a link actually arrives. Running unpackaged
+// (`npm start`/`electron .`) needs the electron binary + this project's path
+// passed explicitly, since there's no installed .exe/.app for the OS to
+// register instead; process.defaultApp is Electron's own flag for "running
+// unpackaged like this".
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient("lpm", process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient("lpm");
+}
+
+// macOS hands a clicked lpm:// link to an already-running instance (or one
+// it launches fresh) via this event rather than second-instance/argv below —
+// register it up front, before app.whenReady(), so a cold launch from a
+// link doesn't have a chance to fire before the listener's in place.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  handleDeepLink(url);
+});
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, commandLine) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
+    // Windows/Linux: a second launch attempt while this instance is already
+    // running hands off to it via this event instead of actually starting a
+    // new process — if that second attempt was the OS invoking an lpm://
+    // link, the link itself rides along as a plain command-line argument.
+    const url = commandLine.find((arg) => arg.startsWith("lpm://"));
+    if (url) handleDeepLink(url);
   });
 
   app.whenReady().then(() => {
@@ -1180,6 +1413,13 @@ if (!gotLock) {
     backfillTrueVersions().catch((err) => console.error("backfillTrueVersions failed:", err));
     pollDevice();
     pollTimer = setInterval(pollDevice, DEVICE_POLL_MS);
+
+    // Windows/Linux: a fresh launch (this app wasn't already running) via an
+    // lpm:// link arrives as a plain argument on this very process's own
+    // argv, rather than second-instance above (that's only for the case
+    // where an already-running instance intercepts a second launch attempt).
+    const initialUrl = process.argv.find((arg) => arg.startsWith("lpm://"));
+    if (initialUrl) handleDeepLink(initialUrl);
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
