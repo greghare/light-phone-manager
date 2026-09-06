@@ -82,24 +82,7 @@ Download the latest build for your platform from the
   `chmod +x`, then run it directly) or the `.deb` (install with
   `sudo dpkg -i <file>.deb` or your distro's package installer).
 
-- **NixOS** (with flakes enabled)
-  Temporary install:
-  ```sh
-  # try it out
-  nix shell github:greghare/light-phone-manager
-  ```
-
-  Persistent install:
-  `environment.systemPackages`:
-  ```nix
-  # flake.nix
-  inputs.light-phone-manager.url = "github:greghare/light-phone-manager";
-
-  # configuration.nix
-  environment.systemPackages = [
-    inputs.light-phone-manager.packages.${pkgs.system}.default
-  ];
-  ```
+- **NixOS** — a Nix flake is available: `github:greghare/light-phone-manager/`
 
 ## Developer guide
 
