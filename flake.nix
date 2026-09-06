@@ -4,7 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
-    light.url = "github:garado/light/v0.3.0";
   };
 
   outputs =
@@ -12,18 +11,53 @@
       self,
       nixpkgs,
       flake-utils,
-      light,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs { inherit system; };
 
-        lightCli = light.packages.${system}.light-phone-cli-tui;
+        # the api/cli flakes are broken at v0.3.0 (whoops), so fetch them from PyPI
+        lightPhoneApi = pkgs.python3Packages.buildPythonPackage rec {
+          pname = "light-phone-api";
+          version = "0.3.0";
+          format = "wheel";
+          src = pkgs.fetchurl {
+            url = "https://files.pythonhosted.org/packages/93/d6/6d1da31786904c627ce725951e9fe206bc75c5075960deb59552624da1f9/light_phone_api-0.3.0-py3-none-any.whl";
+            hash = "sha256-V66G/4EA5W5RKyDLTdZMtNV4f7U49sqoSjdRvU3yzT4=";
+          };
+          propagatedBuildInputs = with pkgs.python3Packages; [
+            attrs
+            httpx
+            keyring
+            mutagen
+            python-dateutil
+          ];
+          doCheck = false;
+        };
+
+        lightPhoneCliTui = pkgs.python3Packages.buildPythonPackage rec {
+          pname = "light-phone-cli-tui";
+          version = "0.3.0";
+          format = "wheel";
+          src = pkgs.fetchurl {
+            url = "https://files.pythonhosted.org/packages/34/4e/ac24ab3a3934cb7d94fc78e26c543e3c33a9b2cb29665f30e7fa83e99e10/light_phone_cli_tui-0.3.0-py3-none-any.whl";
+            hash = "sha256-BaxPrXO3OZMvzvxaegiCHkA16UdbspXHir7demOrGbc=";
+          };
+          propagatedBuildInputs = with pkgs.python3Packages; [
+            click
+            inquirerpy
+            lightPhoneApi
+            rapidfuzz
+            rich
+            rich-click
+          ];
+          doCheck = false;
+        };
 
         # Python env with light_cli_tui importable.
         # Symlinked into `resources/light-cli/`, where LPM looks for a bundled python.
-        lightPythonEnv = lightCli.pythonModule.withPackages (_: [ lightCli ]);
+        lightPythonEnv = pkgs.python3.withPackages (_: [ lightPhoneCliTui ]);
       in
       {
         packages.default = pkgs.buildNpmPackage {
@@ -76,7 +110,7 @@
           '';
 
           meta = {
-            description = "Manage sideloaded tools on your Light Phone 3";
+            description = "Manage your Light Phone 3";
             homepage = "https://github.com/greghare/light-phone-manager";
             license = pkgs.lib.licenses.mit;
             mainProgram = "light-phone-manager";
