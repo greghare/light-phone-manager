@@ -82,6 +82,8 @@ Download the latest build for your platform from the
   `chmod +x`, then run it directly) or the `.deb` (install with
   `sudo dpkg -i <file>.deb` or your distro's package installer).
 
+- **NixOS** — a Nix flake is available: `github:greghare/light-phone-manager/`
+
 ## Developer guide
 
 For building/running from source, the project layout, media backup details,
