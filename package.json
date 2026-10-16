@@ -68,7 +68,10 @@
                     "arch": ["x64", "arm64"]
                 }
             ],
-            "identity": null,
+            "sign": "./scripts/sign-mac.js",
+            "hardenedRuntime": false,
+            "preAutoEntitlements": false,
+            "notarize": false,
             "extraResources": [
                 {
                     "from": "resources/platform-tools/darwin",
