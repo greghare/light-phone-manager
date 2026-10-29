@@ -49,7 +49,7 @@ const PY_MINOR = "3.11"; // site-packages dir on posix is lib/python<PY_MINOR>/s
 // they're missing at runtime (ModuleNotFoundError: No module named
 // 'backports' / 'importlib_metadata'). Listed explicitly here so they're
 // always included regardless of what's resolving it.
-const LIGHT_CLI_SPEC = ["light-phone-cli-tui==0.3.0", "backports.tarfile", "importlib_metadata"];
+const LIGHT_CLI_SPEC = ["light-phone-cli-tui==0.3.3", "backports.tarfile", "importlib_metadata"];
 
 // electron-builder platform key -> where to get a CPython for it, and which
 // wheel platform tag(s) match it on PyPI. One x86_64 build per OS, same as

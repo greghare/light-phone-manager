@@ -20,11 +20,11 @@
         # the api/cli flakes are broken at v0.3.0 (whoops), so fetch them from PyPI
         lightPhoneApi = pkgs.python3Packages.buildPythonPackage rec {
           pname = "light-phone-api";
-          version = "0.3.0";
+          version = "0.3.3";
           format = "wheel";
           src = pkgs.fetchurl {
-            url = "https://files.pythonhosted.org/packages/93/d6/6d1da31786904c627ce725951e9fe206bc75c5075960deb59552624da1f9/light_phone_api-0.3.0-py3-none-any.whl";
-            hash = "sha256-V66G/4EA5W5RKyDLTdZMtNV4f7U49sqoSjdRvU3yzT4=";
+            url = "https://files.pythonhosted.org/packages/61/fa/31e1613f14266aeeae80b012f1620af36666025abe8e526e1c447e3dc24a/light_phone_api-0.3.3-py3-none-any.whl";
+            hash = "sha256-+DDPWM3iKSjC3j9wc06a/O819pzIPZ5FekOoL52aulI=";
           };
           propagatedBuildInputs = with pkgs.python3Packages; [
             attrs
@@ -38,11 +38,11 @@
 
         lightPhoneCliTui = pkgs.python3Packages.buildPythonPackage rec {
           pname = "light-phone-cli-tui";
-          version = "0.3.0";
+          version = "0.3.3";
           format = "wheel";
           src = pkgs.fetchurl {
-            url = "https://files.pythonhosted.org/packages/34/4e/ac24ab3a3934cb7d94fc78e26c543e3c33a9b2cb29665f30e7fa83e99e10/light_phone_cli_tui-0.3.0-py3-none-any.whl";
-            hash = "sha256-BaxPrXO3OZMvzvxaegiCHkA16UdbspXHir7demOrGbc=";
+            url = "https://files.pythonhosted.org/packages/e2/2c/aa0ed6aa0ad8473a07f91ffb35a4532274a261c5b6878172835a522db60f/light_phone_cli_tui-0.3.3-py3-none-any.whl";
+            hash = "sha256-WEP2MdsDhL/SpOvP1YuLLxqABZkxb99I1AY0ooyGMcI=";
           };
           propagatedBuildInputs = with pkgs.python3Packages; [
             click
@@ -65,7 +65,7 @@
           version = "1.2.0";
           src = ./.;
 
-          npmDepsHash = "sha256-y/kvfml3v0vOeL1Vx/dCXrCvZn63cWZX2PZKym4OSr8=";
+          npmDepsHash = "sha256-gJ1aDrvb4YVIWueM/47EfxyienLFubth0a7YyOAbt80=";
 
           # Only production deps are needed at runtime, since electron and
           # electron-builder (devDependencies) are provided by nixpkgs
