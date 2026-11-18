@@ -72,12 +72,17 @@ Download the latest build for your platform from the
 
 - **Windows** — download the `.exe` installer and run it.
 - **macOS** — download the `.dmg`, open it, and drag Light Phone Manager into
-  Applications. Since the app isn't notarized/signed, macOS will refuse to
-  open it until you clear the quarantine flag — run this once from Terminal
-  after installing:
+  Applications. The app is ad-hoc signed, not Developer ID signed or
+  notarized. Ad-hoc signing does not make the app trusted by Gatekeeper or
+  guarantee it will open without user action. If macOS blocks it, use
+  **System Settings → Privacy & Security → Open Anyway**, if available,
+  only if you trust the download. As an alternative user-action workaround
+  for a quarantined app you trust, remove only its quarantine attribute
+  from Terminal after installing:
   ```sh
-  xattr -cr "/Applications/Light Phone Manager.app"
+  xattr -dr com.apple.quarantine "/Applications/Light Phone Manager.app"
   ```
+  This does not notarize the app or guarantee that all macOS warnings disappear.
 - **Linux** — download either the `.AppImage` (make it executable with
   `chmod +x`, then run it directly) or the `.deb` (install with
   `sudo dpkg -i <file>.deb` or your distro's package installer).
